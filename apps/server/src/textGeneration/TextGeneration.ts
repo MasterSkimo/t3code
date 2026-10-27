@@ -32,7 +32,8 @@ type TextGenerationOp =
   | "generatePrContent"
   | "generateBranchName"
   | "generateThreadTitle"
-  | "generateReviewGuide";
+  | "generateReviewGuide"
+  | "generateStructuredOutput";
 
 const resolveInstance = (
   registry: ProviderInstanceRegistry.ProviderInstanceRegistry["Service"],
@@ -79,6 +80,15 @@ export const make = Effect.gen(function* () {
         Effect.flatMap((textGeneration) => textGeneration.generateReviewGuide(input)),
       );
     }),
+    generateStructuredOutput: Effect.fn("TextGeneration.generateStructuredOutput")(
+      function (input) {
+        return resolveInstance(
+          registry,
+          "generateStructuredOutput",
+          input.modelSelection.instanceId,
+        ).pipe(Effect.flatMap((textGeneration) => textGeneration.generateStructuredOutput(input)));
+      },
+    ),
     generateThreadTitle: Effect.fn("TextGeneration.generateThreadTitle")(function (input) {
       return resolveInstance(registry, "generateThreadTitle", input.modelSelection.instanceId).pipe(
         Effect.flatMap((textGeneration) =>

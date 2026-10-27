@@ -70,6 +70,17 @@ export const decodeJsonReply = <S extends Schema.Top>(
 };
 
 export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
+  const generateStructuredOutput: ProviderTextGeneration["generateStructuredOutput"] = Effect.fn(
+    `${name}.generateStructuredOutput`,
+  )(function* (input) {
+    return yield* run({
+      operation: "generateStructuredOutput",
+      cwd: input.cwd,
+      prompt: input.prompt,
+      outputSchema: input.outputSchema,
+      modelSelection: input.modelSelection,
+    });
+  });
   const generateCommitMessage: ProviderTextGeneration["generateCommitMessage"] = Effect.fn(
     `${name}.generateCommitMessage`,
   )(function* (input) {
@@ -173,5 +184,6 @@ export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
     generateBranchName,
     generateThreadTitle,
     generateReviewGuide,
+    generateStructuredOutput,
   } satisfies ProviderTextGeneration;
 }

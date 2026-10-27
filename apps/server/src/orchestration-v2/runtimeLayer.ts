@@ -1,6 +1,7 @@
 import * as GuestShareService from "../guest/GuestShareService.ts";
 import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
+import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as OrchestrationCommandReceipts from "../persistence/OrchestrationCommandReceipts.ts";
@@ -56,6 +57,11 @@ import * as ThreadForkService from "./ThreadForkService.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as PlotlineDagService from "../plotline/PlotlineDagService.ts";
+import * as HarnessEvents from "../harness/events.ts";
+import * as HarnessProposalService from "../harness/HarnessProposalService.ts";
+import * as HarnessSkillsService from "../harness/HarnessSkillsService.ts";
+import * as HarnessEngine from "../harness/engine.ts";
+import * as HarnessAnalysisService from "../harness/HarnessAnalysisService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 
 export const layerEventInfrastructure = Layer.mergeAll(
@@ -238,6 +244,29 @@ const layerOrchestratorProvided = Orchestrator.layer.pipe(
   ),
 );
 
+const layerHarnessSkillsProvided = HarnessSkillsService.layer.pipe(
+  Layer.provide(layerProjectService),
+);
+const layerHarnessProposalsProvided = HarnessProposalService.layer.pipe(
+  Layer.provide(layerHarnessSkillsProvided),
+);
+const layerHarnessProposalRecovery = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const proposals = yield* HarnessProposalService.HarnessProposalService;
+    yield* proposals
+      .recoverInterrupted()
+      .pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Harness startup recovery could not finish.", { cause }),
+        ),
+      );
+  }),
+).pipe(Layer.provide(layerHarnessProposalsProvided));
+const layerHarnessEventsProvided = HarnessEvents.layer.pipe(
+  Layer.provide(Layer.merge(layerOrchestratorProvided, PlotlineDagService.layer)),
+);
+const layerHarnessEngineProvided = HarnessEngine.layer.pipe(Layer.provide(TextGeneration.layer));
+
 const layerAgentSessionImporterProvided = AgentSessionImporter.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
@@ -258,6 +287,18 @@ const layerThreadManagementProvided = ThreadManagementService.layerWithLegacyImp
       layerLegacyV1ThreadImporterProvided,
       layerCommandReceiptStoreProvided,
       layerProviderSessionManagerProvided,
+    ),
+  ),
+);
+const layerHarnessAnalysisProvided = HarnessAnalysisService.layer.pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      layerHarnessEngineProvided,
+      layerHarnessEventsProvided,
+      layerHarnessProposalsProvided,
+      layerHarnessSkillsProvided,
+      layerProjectService,
+      layerThreadManagementProvided,
     ),
   ),
 );
@@ -370,6 +411,10 @@ export const layerProduction = Layer.mergeAll(
   layerThreadLifecycleProvided,
   layerScheduledTaskProvided,
   PlotlineDagService.layer,
+  layerHarnessProposalsProvided,
+  layerHarnessProposalRecovery,
+  layerHarnessEventsProvided,
+  layerHarnessAnalysisProvided,
   layerSecretRequestsProvided,
   GuestShareService.layer.pipe(
     Layer.provide(Layer.merge(layerOrchestratorProvided, layerCommandOutputHubProvided)),

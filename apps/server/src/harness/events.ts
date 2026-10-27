@@ -1,0 +1,363 @@
+import type { OrchestrationV2DomainEvent, PlotlineDag } from "@t3tools/contracts";
+import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as PubSub from "effect/PubSub";
+import * as Stream from "effect/Stream";
+import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
+import * as PlotlineDagService from "../plotline/PlotlineDagService.ts";
+
+export type HarnessSignificantEventType =
+  | "user_feedback"
+  | "repeated_workflow"
+  | "successful_output"
+  | "failure"
+  | "recovered_workflow";
+
+export interface HarnessSignificantEvent {
+  readonly id: string;
+  readonly at: string;
+  readonly threadId?: string;
+  readonly projectId?: string;
+  readonly type: HarnessSignificantEventType;
+  readonly summary: string;
+  readonly evidence: ReadonlyArray<string>;
+  readonly sourceRefs: ReadonlyArray<string>;
+}
+
+const MAX_EVENTS = 100;
+const MAX_EVIDENCE_CHARS = 1_000;
+const correctionPattern =
+  /\b(?:no|wrong|incorrect|instead|missed|redo|fix|don't|do not|not what i asked|that's not|that is not)\b/i;
+
+const bounded = (value: string): string => value.trim().slice(0, MAX_EVIDENCE_CHARS);
+
+const redactEvidence = (value: string): string =>
+  bounded(value)
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, "Bearer [redacted]")
+    .replace(
+      /\b(api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret)\s*[:=]\s*[^\s,;]+/gi,
+      "$1=[redacted]",
+    )
+    .replace(/\b(sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{20,})\b/g, "[redacted]");
+
+const normalizedText = (value: string): string =>
+  value
+    .toLocaleLowerCase()
+    .replace(/\s+/g, " ")
+    .replace(/[\p{P}\p{S}]/gu, "")
+    .trim();
+
+/** Collects provider-neutral signals from the committed orchestration event stream. */
+export function collectSignificantEvents(
+  events: ReadonlyArray<OrchestrationV2DomainEvent>,
+): ReadonlyArray<HarnessSignificantEvent> {
+  const messagesByRun = new Map<
+    string,
+    Array<Extract<OrchestrationV2DomainEvent, { type: "message.updated" }>>
+  >();
+  const userPrompts = new Map<
+    string,
+    Array<Extract<OrchestrationV2DomainEvent, { type: "message.updated" }>>
+  >();
+  for (const event of events) {
+    if (event.type !== "message.updated" || event.payload.workflowScript) continue;
+    const message = event.payload;
+    if (message.role === "assistant" && message.runId) {
+      const messages = messagesByRun.get(message.runId) ?? [];
+      messages.push(event);
+      messagesByRun.set(message.runId, messages);
+    }
+    if (message.role === "user" && message.text.trim().length > 0) {
+      const key = `${event.threadId}:${normalizedText(message.text)}`;
+      if (!key) continue;
+      const prompts = userPrompts.get(key) ?? [];
+      prompts.push(event);
+      userPrompts.set(key, prompts);
+    }
+  }
+
+  const output: Array<HarnessSignificantEvent> = [];
+  const emitted = new Set<string>();
+  const add = (event: HarnessSignificantEvent) => {
+    if (emitted.has(event.id)) return;
+    emitted.add(event.id);
+    output.push(event);
+  };
+
+  for (const event of events) {
+    if (
+      event.type === "message.updated" &&
+      event.payload.role === "user" &&
+      !event.payload.workflowScript
+    ) {
+      const text = event.payload.text.trim();
+      const key = `${event.threadId}:${normalizedText(text)}`;
+      const repeats = userPrompts.get(key) ?? [];
+      if (correctionPattern.test(text)) {
+        add({
+          id: `feedback:${event.id}`,
+          at: DateTime.formatIso(event.occurredAt),
+          threadId: event.threadId,
+          type: "user_feedback",
+          summary: "The user corrected or redirected the agent.",
+          evidence: [redactEvidence(text)],
+          sourceRefs: [event.id, event.payload.id],
+        });
+      }
+      if (repeats.length > 1 && repeats[0]?.id === event.id) {
+        add({
+          id: `repeat:${event.id}`,
+          at: DateTime.formatIso(event.occurredAt),
+          threadId: event.threadId,
+          type: "repeated_workflow",
+          summary: `The same user request appeared ${repeats.length} times.`,
+          evidence: [redactEvidence(text)],
+          sourceRefs: repeats.flatMap((item) => [item.id, item.payload.id]),
+        });
+      }
+    }
+
+    if (event.type === "run.updated" && event.payload.status === "failed") {
+      add({
+        id: `failure:${event.id}`,
+        at: DateTime.formatIso(event.occurredAt),
+        threadId: event.threadId,
+        type: "failure",
+        summary: "The agent run failed.",
+        evidence: ["Run status: failed."],
+        sourceRefs: [event.id, event.payload.id],
+      });
+    }
+
+    if (event.type === "run.updated" && event.payload.status === "completed") {
+      const messages = messagesByRun.get(event.payload.id) ?? [];
+      const latest = messages.at(-1);
+      add({
+        id: `success:${event.id}`,
+        at: DateTime.formatIso(event.occurredAt),
+        threadId: event.threadId,
+        type: "successful_output",
+        summary: "The agent completed a run successfully.",
+        evidence: [
+          ...(latest?.payload.text.trim() ? [redactEvidence(latest.payload.text)] : []),
+          "Run status: completed.",
+        ],
+        sourceRefs: [event.id, event.payload.id, ...(latest ? [latest.id, latest.payload.id] : [])],
+      });
+    }
+  }
+
+  return output.slice(-MAX_EVENTS);
+}
+
+export interface SignificantEventCollector {
+  readonly observe: (event: OrchestrationV2DomainEvent) => ReadonlyArray<HarnessSignificantEvent>;
+  readonly observePlotlineDags: (
+    dags: ReadonlyArray<PlotlineDag>,
+  ) => ReadonlyArray<HarnessSignificantEvent>;
+  readonly snapshot: () => ReadonlyArray<HarnessSignificantEvent>;
+}
+
+export class HarnessSignificantEventStore extends Context.Service<
+  HarnessSignificantEventStore,
+  {
+    readonly snapshot: () => ReadonlyArray<HarnessSignificantEvent>;
+    readonly stream: Stream.Stream<HarnessSignificantEvent>;
+  }
+>()("t3/harness/events/HarnessSignificantEventStore") {}
+
+/** Keeps only the bounded signal history needed by Harness; safe to call from a committed event stream. */
+export function makeSignificantEventCollector(): SignificantEventCollector {
+  const events: Array<HarnessSignificantEvent> = [];
+  const seen = new Set<string>();
+  const requests = new Map<
+    string,
+    { count: number; sourceRefs: Array<string>; evidence: string }
+  >();
+  const assistantByRun = new Map<string, { id: string; messageId: string; text: string }>();
+  const taskStates = new Map<string, { state: string; updatedAt: string }>();
+
+  const add = (event: HarnessSignificantEvent): ReadonlyArray<HarnessSignificantEvent> => {
+    if (seen.has(event.id)) return [];
+    seen.add(event.id);
+    events.push(event);
+    if (events.length > MAX_EVENTS) events.shift();
+    return [event];
+  };
+
+  const observe = (event: OrchestrationV2DomainEvent): ReadonlyArray<HarnessSignificantEvent> => {
+    if (event.type === "message.updated") {
+      const message = event.payload;
+      if (message.workflowScript) return [];
+      if (message.role === "assistant" && message.runId) {
+        assistantByRun.set(message.runId, {
+          id: event.id,
+          messageId: message.id,
+          text: message.text,
+        });
+        return [];
+      }
+      if (message.role !== "user" || !message.text.trim()) return [];
+      const text = message.text.trim();
+      const refs = [event.id, message.id];
+      const found: Array<HarnessSignificantEvent> = [];
+      if (correctionPattern.test(text)) {
+        found.push(
+          ...add({
+            id: `feedback:${event.id}`,
+            at: DateTime.formatIso(event.occurredAt),
+            threadId: event.threadId,
+            type: "user_feedback",
+            summary: "The user corrected or redirected the agent.",
+            evidence: [redactEvidence(text)],
+            sourceRefs: refs,
+          }),
+        );
+      }
+      const key = `${event.threadId}:${normalizedText(text)}`;
+      if (key) {
+        const prior = requests.get(key) ?? { count: 0, sourceRefs: [], evidence: text };
+        prior.count += 1;
+        prior.sourceRefs.push(...refs);
+        requests.set(key, prior);
+        if (prior.count === 2) {
+          found.push(
+            ...add({
+              id: `repeat:${event.id}`,
+              at: DateTime.formatIso(event.occurredAt),
+              threadId: event.threadId,
+              type: "repeated_workflow",
+              summary: "The same user request appeared more than once.",
+              evidence: [redactEvidence(prior.evidence)],
+              sourceRefs: [...prior.sourceRefs],
+            }),
+          );
+        }
+        if (requests.size > MAX_EVENTS * 10) requests.delete(requests.keys().next().value!);
+      }
+      return found;
+    }
+
+    if (event.type !== "run.updated") return [];
+    if (event.payload.status === "failed") {
+      return add({
+        id: `failure:${event.id}`,
+        at: DateTime.formatIso(event.occurredAt),
+        threadId: event.threadId,
+        type: "failure",
+        summary: "The agent run failed.",
+        evidence: ["Run status: failed."],
+        sourceRefs: [event.id, event.payload.id],
+      });
+    }
+    if (event.payload.status === "completed") {
+      const latest = assistantByRun.get(event.payload.id);
+      return add({
+        id: `success:${event.id}`,
+        at: DateTime.formatIso(event.occurredAt),
+        threadId: event.threadId,
+        type: "successful_output",
+        summary: "The agent completed a run successfully.",
+        evidence: [
+          ...(latest?.text.trim() ? [redactEvidence(latest.text)] : []),
+          "Run status: completed.",
+        ],
+        sourceRefs: [event.id, event.payload.id, ...(latest ? [latest.id, latest.messageId] : [])],
+      });
+    }
+    return [];
+  };
+
+  const observePlotlineDags = (
+    dags: ReadonlyArray<PlotlineDag>,
+  ): ReadonlyArray<HarnessSignificantEvent> => {
+    const found: Array<HarnessSignificantEvent> = [];
+    for (const dag of dags) {
+      for (const task of dag.tasks) {
+        const key = `${dag.id}:${task.id}`;
+        const previous = taskStates.get(key);
+        taskStates.set(key, { state: task.state, updatedAt: task.updatedAt });
+        if (!previous || previous.state === task.state) continue;
+        const recovered =
+          previous.state === "failed" && (task.state === "running" || task.state === "done");
+        const completed = task.state === "done";
+        const failed = task.state === "failed";
+        if (!recovered && !completed && !failed) continue;
+        const type: HarnessSignificantEventType = recovered
+          ? "recovered_workflow"
+          : completed
+            ? "successful_output"
+            : "failure";
+        const sourceEvent = dag.events.find(
+          (candidate) => candidate.at === task.updatedAt && candidate.taskId === task.id,
+        );
+        const signal: HarnessSignificantEvent = {
+          id: `plotline:${dag.id}:${task.id}:${task.updatedAt}:${task.state}`,
+          at: task.updatedAt,
+          ...(task.threadId ? { threadId: task.threadId } : {}),
+          projectId: dag.projectId,
+          type,
+          summary: recovered
+            ? "A previously failed Plotline task was restarted or completed."
+            : completed
+              ? "A Plotline task completed successfully."
+              : "A Plotline task failed.",
+          evidence: [redactEvidence(`Task: ${task.title}. State: ${task.state}.`)],
+          sourceRefs: [dag.id, task.id, ...(sourceEvent ? [sourceEvent.id] : [])],
+        };
+        found.push(...add(signal));
+      }
+    }
+    return found;
+  };
+
+  return { observe, observePlotlineDags, snapshot: () => [...events] };
+}
+
+const makeStore = Effect.gen(function* () {
+  const orchestrator = yield* Orchestrator.OrchestratorV2;
+  const plotline = yield* PlotlineDagService.PlotlineDagService;
+  const collector = makeSignificantEventCollector();
+  const changes = yield* PubSub.sliding<HarnessSignificantEvent>(100);
+  const publish = (items: ReadonlyArray<HarnessSignificantEvent>) =>
+    Effect.forEach(items, (event) => PubSub.publish(changes, event), { discard: true }).pipe(
+      Effect.ignoreCause({ log: true }),
+    );
+  yield* Stream.runForEach(orchestrator.streamDomainEvents, (event) =>
+    Effect.sync(() => collector.observe(event)).pipe(
+      Effect.flatMap(publish),
+      Effect.ignoreCause({ log: true }),
+    ),
+  ).pipe(
+    Effect.tapCause((cause) =>
+      Effect.logWarning("Harness event collection stopped after an orchestration stream error.", {
+        cause,
+      }),
+    ),
+    Effect.ignoreCause({ log: true }),
+    Effect.forkScoped,
+  );
+  yield* plotline.subscribe({}).pipe(
+    Stream.runForEach((result) =>
+      Effect.sync(() => collector.observePlotlineDags(result.dags)).pipe(
+        Effect.flatMap(publish),
+        Effect.ignoreCause({ log: true }),
+      ),
+    ),
+    Effect.tapCause((cause) =>
+      Effect.logWarning("Harness Plotline event collection stopped after a subscription error.", {
+        cause,
+      }),
+    ),
+    Effect.ignoreCause({ log: true }),
+    Effect.forkScoped,
+  );
+  return HarnessSignificantEventStore.of({
+    snapshot: collector.snapshot,
+    stream: Stream.fromPubSub(changes),
+  });
+});
+
+export const layer = Layer.effect(HarnessSignificantEventStore, makeStore);

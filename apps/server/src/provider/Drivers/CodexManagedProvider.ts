@@ -262,7 +262,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     snapshot.getSnapshot.pipe(Effect.map((value) => value.models)),
     resolveRuntime,
   );
-  const protect = <A>(operation: string, effect: Effect.Effect<A, TextGenerationError>) =>
+  const protect = <A, R>(operation: string, effect: Effect.Effect<A, TextGenerationError, R>) =>
     runtime.auth.controller.withAccess!(effect).pipe(
       Effect.scoped,
       Effect.mapError(
@@ -284,6 +284,8 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
       protect("generateThreadTitle", nativeGeneration.generateThreadTitle(value)),
     generateReviewGuide: (value) =>
       protect("generateReviewGuide", nativeGeneration.generateReviewGuide(value)),
+    generateStructuredOutput: (value) =>
+      protect("generateStructuredOutput", nativeGeneration.generateStructuredOutput(value)),
   };
   return {
     instanceId,

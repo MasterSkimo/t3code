@@ -544,6 +544,15 @@ export const SETTINGS_SEARCH_ITEMS = [
     scope: "environment-defaults",
   },
   {
+    id: "harness-learning",
+    title: "Harness learning",
+    to: "/settings/maintenance",
+    scope: "environment-defaults",
+    searchTerms: [
+      "learn skills reusable proposals review evidence engine model analysis budget harness",
+    ],
+  },
+  {
     id: "continue-threads-after-server-update",
     title: "Continue threads after restarts",
     to: "/settings/maintenance",
