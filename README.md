@@ -107,6 +107,10 @@ Full docs live in [docs/](./docs). There's no docs site yet.
 - Multiple accounts: [Codex](./docs/user/providers-codex.md) · [Claude](./docs/user/providers-claude.md)
 - [Run T3 Code as a background service](./docs/user/background-service.md)
 
+## Plotline DAGs
+
+Open the DAG view from the sidebar to create and track task graphs with dependencies, status, and effort levels. Link a task to a T3 thread to open that session from the DAG. Existing Plotline `state.json` files can be imported; the source file is left unchanged.
+
 Building from source? Start at [docs/internals/overview.md](./docs/internals/overview.md).
 
 ## If you REALLY want to contribute still.... read this first

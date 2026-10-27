@@ -7,6 +7,14 @@ import {
 } from "./orchestrationV2.ts";
 import { OrchestrationDispatchCommandError } from "./orchestrationDispatch.ts";
 import {
+  PlotlineDag,
+  PlotlineDagDeleteInput,
+  PlotlineDagError,
+  PlotlineDagListInput,
+  PlotlineDagListResult,
+  PlotlineDagSaveInput,
+} from "./plotlineDag.ts";
+import {
   McpAppCallToolInput,
   McpAppCallToolResult,
   McpAppReadResourceInput,
@@ -525,6 +533,11 @@ export const WS_METHODS = {
   guestShareCreate: "guestShare.create",
   scheduledTasksListWebhookDeliveries: "scheduledTasks.listWebhookDeliveries",
   scheduledTasksGetWebhookDelivery: "scheduledTasks.getWebhookDelivery",
+
+  plotlineDagsList: "plotlineDags.list",
+  plotlineDagsSubscribe: "plotlineDags.subscribe",
+  plotlineDagsSave: "plotlineDags.save",
+  plotlineDagsDelete: "plotlineDags.delete",
 
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
   cloudInstallRelayClient: "cloud.installRelayClient",
@@ -1819,6 +1832,31 @@ const WsScheduledTasksListRpc = Rpc.make(WS_METHODS.scheduledTasksList, {
   error: Schema.Union([ScheduledTaskError, EnvironmentAuthorizationError]),
 });
 
+const WsPlotlineDagsListRpc = Rpc.make(WS_METHODS.plotlineDagsList, {
+  payload: PlotlineDagListInput,
+  success: PlotlineDagListResult,
+  error: Schema.Union([PlotlineDagError, EnvironmentAuthorizationError]),
+});
+
+const WsPlotlineDagsSubscribeRpc = Rpc.make(WS_METHODS.plotlineDagsSubscribe, {
+  payload: PlotlineDagListInput,
+  success: PlotlineDagListResult,
+  error: Schema.Union([PlotlineDagError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+
+const WsPlotlineDagsSaveRpc = Rpc.make(WS_METHODS.plotlineDagsSave, {
+  payload: PlotlineDagSaveInput,
+  success: PlotlineDag,
+  error: Schema.Union([PlotlineDagError, EnvironmentAuthorizationError]),
+});
+
+const WsPlotlineDagsDeleteRpc = Rpc.make(WS_METHODS.plotlineDagsDelete, {
+  payload: PlotlineDagDeleteInput,
+  success: Schema.Void,
+  error: Schema.Union([PlotlineDagError, EnvironmentAuthorizationError]),
+});
+
 const WsScheduledTasksSubscribeRpc = Rpc.make(WS_METHODS.scheduledTasksSubscribe, {
   payload: ScheduledTaskListInput,
   success: ScheduledTaskListResult,
@@ -1967,6 +2005,10 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetUsageSummaryRpc,
   WsServerRefreshUsageRatesRpc,
   WsServerSignalProcessRpc,
+  WsPlotlineDagsListRpc,
+  WsPlotlineDagsSubscribeRpc,
+  WsPlotlineDagsSaveRpc,
+  WsPlotlineDagsDeleteRpc,
   WsScheduledTasksListRpc,
   WsScheduledTasksSubscribeRpc,
   WsScheduledTasksUpsertRpc,

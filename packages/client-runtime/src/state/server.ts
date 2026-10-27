@@ -1266,6 +1266,10 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:scheduled-tasks:live",
       tag: WS_METHODS.scheduledTasksSubscribe,
     }),
+    plotlineDagsLive: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:server:plotline-dags:live",
+      tag: WS_METHODS.plotlineDagsSubscribe,
+    }),
     // A cold transcript scan is measured in seconds, so keep the result around
     // long enough that switching windows or re-rendering does not rescan.
     usageSummary: createEnvironmentRpcQueryAtomFamily(runtime, {
@@ -1484,6 +1488,14 @@ export function createServerEnvironmentAtoms<R, E>(
       tag: WS_METHODS.scheduledTasksUpsert,
       scheduler: configScheduler,
       concurrency: configConcurrency,
+    }),
+    savePlotlineDag: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:plotline-dag:save",
+      tag: WS_METHODS.plotlineDagsSave,
+    }),
+    deletePlotlineDag: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:plotline-dag:delete",
+      tag: WS_METHODS.plotlineDagsDelete,
     }),
     setScheduledTaskEnabled: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:scheduled-task:set-enabled",
