@@ -47,18 +47,31 @@ const setup = Effect.gen(function* () {
   yield* sql`CREATE TABLE harness_audit (audit_id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL, action TEXT NOT NULL, at TEXT NOT NULL, note TEXT, proposal_status TEXT NOT NULL)`;
   yield* sql`CREATE TABLE harness_defaults (scope_key TEXT PRIMARY KEY, payload_json TEXT NOT NULL, updated_at TEXT NOT NULL)`;
   yield* sql`CREATE TABLE harness_analysis_budget (scope_key TEXT NOT NULL, day_key TEXT NOT NULL, analyses INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(scope_key, day_key))`;
-  yield* sql`CREATE TABLE harness_analysis_attempts (scope_key TEXT NOT NULL, day_key TEXT NOT NULL, request_id TEXT NOT NULL, PRIMARY KEY(scope_key, day_key, request_id))`;
+  yield* sql`CREATE TABLE harness_analysis_attempts (scope_key TEXT NOT NULL, day_key TEXT NOT NULL, request_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', PRIMARY KEY(scope_key, day_key, request_id))`;
   return yield* Harness.HarnessProposalService;
 });
 
 describe("HarnessProposalService", () => {
+  it.effect("reports skill usage metrics as unavailable until activity is attributed", () =>
+    withDb(
+      Effect.gen(function* () {
+        const service = yield* setup;
+        const inventory = yield* service.inventory({ kind: "global" });
+        assert.deepStrictEqual(inventory.usageMetrics, {
+          status: "unavailable",
+          reason: "skill-usage-not-attributed",
+        });
+      }),
+    ),
+  );
+
   it.effect(
     "persists proposals, requires approval before apply, and records an immutable audit trail",
     () =>
       withDb(
         Effect.gen(function* () {
           const service = yield* setup;
-          const proposal = yield* service.create({
+          const proposalInput = {
             scope: { kind: "project", projectId: "project:one" },
             operation: "create",
             skillName: "release-helper",
@@ -70,7 +83,11 @@ describe("HarnessProposalService", () => {
             engineVersion: "1",
             confidence: 0.9,
             rationale: "Repeated workflow detected.",
-          });
+            idempotencyKey: "auto:event:1:create::event:1",
+          } as const;
+          const proposal = yield* service.create(proposalInput);
+          const retried = yield* service.create(proposalInput);
+          assert.strictEqual(retried.id, proposal.id);
           assert.strictEqual((yield* service.list({ scope: proposal.scope })).proposals.length, 1);
           const rejectedApply = yield* Effect.flip(service.apply(proposal.id));
           assert.strictEqual(rejectedApply._tag, "HarnessError");
@@ -122,23 +139,28 @@ describe("HarnessProposalService", () => {
         const scope = { kind: "project" as const, projectId: "project:one" };
         assert.deepStrictEqual(
           yield* service.consumeAnalysisBudget(scope, 2, "2026-10-27", "event:1"),
-          { allowed: true, isNew: true },
+          { allowed: true, isNew: true, shouldRun: true },
         );
         assert.deepStrictEqual(
           yield* service.consumeAnalysisBudget(scope, 2, "2026-10-27", "event:1"),
-          { allowed: true, isNew: false },
+          { allowed: true, isNew: false, shouldRun: true },
+        );
+        yield* service.completeAnalysisAttempt(scope, "event:1");
+        assert.deepStrictEqual(
+          yield* service.consumeAnalysisBudget(scope, 2, "2026-10-27", "event:1"),
+          { allowed: true, isNew: false, shouldRun: false },
         );
         assert.deepStrictEqual(
           yield* service.consumeAnalysisBudget(scope, 2, "2026-10-27", "event:2"),
-          { allowed: true, isNew: true },
+          { allowed: true, isNew: true, shouldRun: true },
         );
         assert.deepStrictEqual(
           yield* service.consumeAnalysisBudget(scope, 2, "2026-10-27", "event:3"),
-          { allowed: false, isNew: false },
+          { allowed: false, isNew: false, shouldRun: false },
         );
         assert.deepStrictEqual(
           yield* service.consumeAnalysisBudget(scope, 2, "2026-10-28", "event:3"),
-          { allowed: true, isNew: true },
+          { allowed: true, isNew: true, shouldRun: true },
         );
         const budget = yield* service.getAnalysisBudget({ kind: "global" });
         assert.isAtLeast(budget.remaining, 0);

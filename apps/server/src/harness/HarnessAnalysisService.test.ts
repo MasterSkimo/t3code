@@ -64,6 +64,8 @@ const runAnalysis = (options: {
       Effect.provideService(EventStore.HarnessSignificantEventStore, {
         snapshot: () => (options.noEvents ? [] : [baseEvent]),
         stream: Stream.empty,
+        acknowledge: () => Effect.void,
+        recordFailure: () => Effect.succeed(false),
       }),
       Effect.provideService(ProposalStore.HarnessProposalService, {
         getDefaults: () =>
@@ -82,8 +84,10 @@ const runAnalysis = (options: {
           return Effect.succeed({
             allowed: options.allowed ?? true,
             isNew: options.allowed ?? true,
+            shouldRun: options.allowed ?? true,
           });
         },
+        completeAnalysisAttempt: () => Effect.void,
         list: () => Effect.succeed({ proposals: [] }),
         create: (
           input: Parameters<ProposalStore.HarnessProposalService["Service"]["create"]>[0],

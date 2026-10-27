@@ -16,6 +16,7 @@ import { useEnvironmentQuery } from "../state/query";
 import { usePrimaryEnvironmentId } from "../state/environments";
 import { serverEnvironment } from "../state/server";
 import { useAtomCommand } from "../state/use-atom-command";
+import { randomUUID } from "../lib/utils";
 
 const TASK_STATES: ReadonlyArray<PlotlineTaskState> = [
   "pending",
@@ -85,7 +86,7 @@ export function PlotlineDagsPage() {
   const navigate = useNavigate();
   const threadRefs = useThreadRefs();
   const threadShells = useThreadShells();
-  const threadTitleById = new Map(threadShells.map((shell) => [shell.threadId, shell.title]));
+  const threadTitleById = new Map(threadShells.map((shell) => [shell.id, shell.title]));
 
   const dagsQuery = useEnvironmentQuery(
     environmentId === null
@@ -99,7 +100,6 @@ export function PlotlineDagsPage() {
   );
   const dags = dagsQuery.data?.dags ?? [];
   const selectedDag = dags.find((dag) => dag.id === selectedDagId) ?? dags[0] ?? null;
-  const projectNameById = new Map(projectOptions.map((project) => [project.id, project.title]));
 
   const save = async (dag: PlotlineDag) => {
     if (!environmentId) return;
@@ -111,7 +111,7 @@ export function PlotlineDagsPage() {
     const title = dagTitle.trim();
     if (!title || !projectId || !environmentId) return;
     const now = nowIso();
-    const id = `dag-${crypto.randomUUID()}`;
+    const id = `dag-${randomUUID()}`;
     const dag: PlotlineDag = {
       id,
       projectId,
@@ -174,7 +174,7 @@ export function PlotlineDagsPage() {
       for (const source of parsed.dags ?? []) {
         if (typeof source.id !== "string" || typeof source.title !== "string") continue;
         const now = nowIso();
-        const importedId = existingIds.has(source.id) ? `import-${crypto.randomUUID()}` : source.id;
+        const importedId = existingIds.has(source.id) ? `import-${randomUUID()}` : source.id;
         const tasks = Array.isArray(source.tasks)
           ? (source.tasks as Array<Record<string, unknown>>)
           : [];
@@ -242,7 +242,7 @@ export function PlotlineDagsPage() {
           }),
         };
         const states = imported.tasks.map((task) => task.state);
-        const importedState = states.includes("failed")
+        const importedState: PlotlineDag["state"] = states.includes("failed")
           ? "failed"
           : states.includes("running")
             ? "running"
@@ -361,8 +361,9 @@ export function PlotlineDagsPage() {
                 <div className="min-w-0">
                   <h2 className="truncate text-lg font-semibold">{selectedDag.title}</h2>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    {projectNameById.get(selectedDag.projectId) ?? selectedDag.projectId} ·{" "}
-                    {selectedDag.state}
+                    {projectOptions.find((project) => project.id === selectedDag.projectId)
+                      ?.title ?? selectedDag.projectId}{" "}
+                    · {selectedDag.state}
                   </p>
                 </div>
                 <Button

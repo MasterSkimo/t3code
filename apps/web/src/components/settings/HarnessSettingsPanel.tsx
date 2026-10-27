@@ -3,6 +3,7 @@ import {
   type HarnessAuditEntry,
   type HarnessDefaults,
   type HarnessProposal,
+  type HarnessSkillUsageMetricsAvailability,
   type HarnessSkillSummary,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
@@ -29,6 +30,7 @@ export interface HarnessSettingsPanelProps {
   readonly proposals: readonly HarnessProposal[];
   readonly audit: readonly HarnessAuditEntry[];
   readonly inventory: readonly HarnessSkillSummary[];
+  readonly usageMetrics: HarnessSkillUsageMetricsAvailability;
   readonly metrics: HarnessMetrics;
   readonly busy?: boolean;
   readonly notice?: string | null;
@@ -144,6 +146,7 @@ export function HarnessSettingsPanel({
   proposals,
   audit,
   inventory,
+  usageMetrics,
   metrics,
   busy = false,
   notice,
@@ -363,6 +366,13 @@ export function HarnessSettingsPanel({
       </SettingsSection>
 
       <SettingsSection id="harness-inventory" title={`Skill inventory (${inventory.length})`}>
+        {usageMetrics.status === "unavailable" &&
+        usageMetrics.reason === "skill-usage-not-attributed" ? (
+          <p className="px-4 py-2 text-xs text-muted-foreground">
+            Skill usage metrics unavailable: T3 Code does not attribute agent activity to individual
+            skills.
+          </p>
+        ) : null}
         <div className="divide-y divide-border/50">
           {inventory.length === 0 ? (
             <p className="px-4 py-3 text-sm text-muted-foreground">

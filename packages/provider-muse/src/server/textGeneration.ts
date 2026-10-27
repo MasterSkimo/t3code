@@ -70,7 +70,13 @@ const decodeUserInput = Schema.decodeUnknownSync(UserInputRequested);
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
 
-type Operation = keyof ProviderTextGeneration;
+type Operation =
+  | "generateCommitMessage"
+  | "generatePrContent"
+  | "generateBranchName"
+  | "generateThreadTitle"
+  | "generateReviewGuide"
+  | "generateStructuredOutput";
 
 async function generateMuseText(
   host: MuseSdkHost,
@@ -350,6 +356,7 @@ export const makeMuseTextGeneration = Effect.fn("makeMuseTextGeneration")(functi
       modelSelection: input.modelSelection,
     });
   return {
+    supportsStructuredOutput: true,
     generateCommitMessage,
     generatePrContent,
     generateBranchName,

@@ -36,7 +36,9 @@ const scopeKey = (scope: HarnessProposal["scope"]) =>
 export class HarnessProposalService extends Context.Service<
   HarnessProposalService,
   {
-    readonly create: (input: HarnessProposalCreateInput) => Effect.Effect<Proposal, HarnessError>;
+    readonly create: (
+      input: HarnessProposalCreateInput & { readonly idempotencyKey?: string },
+    ) => Effect.Effect<Proposal, HarnessError>;
     readonly list: (
       input: HarnessProposalListInput,
     ) => Effect.Effect<HarnessProposalListResult, HarnessError>;
@@ -58,7 +60,18 @@ export class HarnessProposalService extends Context.Service<
       dailyLimit: number,
       dayKey: string,
       requestId?: string,
-    ) => Effect.Effect<{ readonly allowed: boolean; readonly isNew: boolean }, HarnessError>;
+    ) => Effect.Effect<
+      {
+        readonly allowed: boolean;
+        readonly isNew: boolean;
+        readonly shouldRun: boolean;
+      },
+      HarnessError
+    >;
+    readonly completeAnalysisAttempt: (
+      scope: HarnessProposal["scope"],
+      requestId: string,
+    ) => Effect.Effect<void, HarnessError>;
     readonly getAnalysisBudget: (
       scope: HarnessProposal["scope"],
     ) => Effect.Effect<HarnessAnalysisBudget, HarnessError>;
@@ -147,7 +160,22 @@ const make = Effect.gen(function* () {
     if (!input.skillName.trim() || input.skillName.length > 120)
       return yield* error("Proposal skill name must be non-empty and at most 120 characters.");
     const createdAt = yield* now();
-    const proposalId = yield* id();
+    const proposalId = input.idempotencyKey ?? (yield* id());
+    if (input.idempotencyKey) {
+      const existing = yield* sql<{ readonly payload_json: string }>`
+        SELECT payload_json FROM harness_proposals WHERE proposal_id = ${proposalId}
+      `.pipe(
+        Effect.mapError(() =>
+          error("Could not check for an existing Harness proposal.", proposalId),
+        ),
+      );
+      if (existing[0]) {
+        return yield* Effect.try({
+          try: () => decodeProposal(existing[0]!.payload_json),
+          catch: () => error("Saved Harness proposal is invalid.", proposalId),
+        });
+      }
+    }
     const proposal: Proposal = {
       ...input,
       id: proposalId,
@@ -264,6 +292,7 @@ const make = Effect.gen(function* () {
         scope: skillScope,
         managed,
       })),
+      usageMetrics: { status: "unavailable", reason: "skill-usage-not-attributed" },
     };
   });
 
@@ -551,18 +580,32 @@ const make = Effect.gen(function* () {
           return yield* error("Analysis budget day must use YYYY-MM-DD.");
         if (requestId !== undefined && (!requestId.trim() || requestId.length > 256))
           return yield* error("Analysis request id must be non-empty and at most 256 characters.");
-        if (dailyLimit === 0) return { allowed: false, isNew: false };
+        if (dailyLimit === 0) return { allowed: false, isNew: false, shouldRun: false };
         const attemptId = requestId ?? (yield* id());
         return yield* sql
           .withTransaction(
             Effect.gen(function* () {
+              if (requestId !== undefined) {
+                const prior = yield* sql<{ readonly status: string }>`
+                  SELECT status FROM harness_analysis_attempts
+                  WHERE scope_key = ${scopeKey(scope)} AND request_id = ${attemptId}
+                  ORDER BY day_key DESC LIMIT 1
+                `;
+                if (prior[0]) {
+                  return {
+                    allowed: true,
+                    isNew: false,
+                    shouldRun: prior[0].status === "pending",
+                  };
+                }
+              }
               const inserted = yield* sql<{ readonly request_id: string }>`
         INSERT INTO harness_analysis_attempts (scope_key, day_key, request_id)
         VALUES (${scopeKey(scope)}, ${dayKey}, ${attemptId})
         ON CONFLICT(scope_key, day_key, request_id) DO NOTHING
         RETURNING request_id
       `.pipe(Effect.mapError(() => error("Could not record Harness analysis attempt.")));
-              if (inserted.length === 0) return { allowed: true, isNew: false };
+              if (inserted.length === 0) return { allowed: true, isNew: false, shouldRun: true };
               const consumed = yield* sql<{ readonly analyses: number }>`
         INSERT INTO harness_analysis_budget (scope_key, day_key, analyses)
         VALUES (${scopeKey(scope)}, ${dayKey}, 1)
@@ -570,11 +613,11 @@ const make = Effect.gen(function* () {
         WHERE harness_analysis_budget.analyses < ${dailyLimit}
         RETURNING analyses
       `.pipe(Effect.mapError(() => error("Could not update Harness analysis budget.")));
-              if (consumed.length > 0) return { allowed: true, isNew: true };
+              if (consumed.length > 0) return { allowed: true, isNew: true, shouldRun: true };
               yield* sql`DELETE FROM harness_analysis_attempts WHERE scope_key = ${scopeKey(scope)} AND day_key = ${dayKey} AND request_id = ${attemptId}`.pipe(
                 Effect.mapError(() => error("Could not release Harness analysis attempt.")),
               );
-              return { allowed: false, isNew: false };
+              return { allowed: false, isNew: false, shouldRun: false };
             }),
           )
           .pipe(
@@ -584,6 +627,14 @@ const make = Effect.gen(function* () {
           );
       },
     );
+
+  const completeAnalysisAttempt: HarnessProposalService["Service"]["completeAnalysisAttempt"] =
+    Effect.fn("HarnessProposalService.completeAnalysisAttempt")(function* (scope, requestId) {
+      yield* sql`
+        UPDATE harness_analysis_attempts SET status = 'complete'
+        WHERE scope_key = ${scopeKey(scope)} AND request_id = ${requestId}
+      `.pipe(Effect.mapError(() => error("Could not complete Harness analysis attempt.")));
+    });
 
   const getAnalysisBudget: HarnessProposalService["Service"]["getAnalysisBudget"] = Effect.fn(
     "HarnessProposalService.getAnalysisBudget",
@@ -622,6 +673,7 @@ const make = Effect.gen(function* () {
     getDefaults,
     setDefaults,
     consumeAnalysisBudget,
+    completeAnalysisAttempt,
     getAnalysisBudget,
   });
 });

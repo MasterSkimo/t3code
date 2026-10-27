@@ -105,7 +105,18 @@ export type ReviewGuideGenerationResult = Omit<
   "headSha" | "generatedAt" | "modelSelection"
 >;
 
+export type ProviderTextGenerationOperation =
+  | "generateCommitMessage"
+  | "generatePrContent"
+  | "generateBranchName"
+  | "generateThreadTitle"
+  | "generateReviewGuide"
+  | "generateStructuredOutput";
+
 export interface ProviderTextGeneration {
+  /** Structured output is opt-in because some providers expose only orchestration, not app inference. */
+  readonly supportsStructuredOutput?: boolean;
+
   readonly generateCommitMessage: (
     input: CommitMessageGenerationInput,
   ) => Effect.Effect<CommitMessageGenerationResult, TextGenerationError>;

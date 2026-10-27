@@ -16,6 +16,7 @@ export interface HarnessAnalysisEvent {
     | "user_feedback"
     | "repeated_workflow"
     | "successful_output"
+    | "validated_success"
     | "failure"
     | "recovered_workflow";
   readonly summary: string;

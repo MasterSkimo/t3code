@@ -85,6 +85,12 @@ export function HarnessSettingsSection() {
       }
       audit={auditQuery.data?.entries ?? []}
       inventory={inventoryQuery.data?.skills ?? []}
+      usageMetrics={
+        inventoryQuery.data?.usageMetrics ?? {
+          status: "unavailable",
+          reason: "skill-usage-not-attributed",
+        }
+      }
       metrics={{
         proposalCount: proposals.length,
         approvedCount: proposals.filter((proposal) => proposal.status === "approved").length,

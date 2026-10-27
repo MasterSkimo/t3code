@@ -126,6 +126,8 @@ function selectOpenCodeRuntimeTextGeneration(
   v2: ProviderTextGeneration,
 ): ProviderTextGeneration {
   return {
+    supportsStructuredOutput:
+      v1.supportsStructuredOutput === true && v2.supportsStructuredOutput === true,
     generateCommitMessage: (input) =>
       byOpenCodeRuntime(probe.get, {
         v1: v1.generateCommitMessage(input),

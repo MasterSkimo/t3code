@@ -159,4 +159,22 @@ describe("collectSignificantEvents", () => {
       "thread_test",
     ]);
   });
+
+  it("persists completed-run signals and emits a separate signal only after explicit validation", () => {
+    const completed = run("run:validated", "completed");
+    const collector = makeSignificantEventCollector();
+    expect(collector.observe(completed).map((event) => event.type)).toEqual(["successful_output"]);
+    const approval = message("approval", "That looks good, thanks", "user", null);
+    const validated = collector.observe(approval);
+    expect(validated.map((event) => event.type)).toEqual(["validated_success"]);
+
+    // A fresh process restores the bounded signal window and repeated delivery is idempotent.
+    const restarted = makeSignificantEventCollector();
+    for (const event of collector.snapshot()) restarted.seed(event);
+    expect(restarted.observe(completed)).toEqual([]);
+    expect(restarted.snapshot().map((event) => event.type)).toEqual([
+      "successful_output",
+      "validated_success",
+    ]);
+  });
 });

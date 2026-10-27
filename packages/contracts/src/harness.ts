@@ -66,7 +66,16 @@ export const HarnessSkillSummary = Schema.Struct({
 });
 export type HarnessSkillSummary = typeof HarnessSkillSummary.Type;
 
-export const HarnessSkillInventory = Schema.Struct({ skills: Schema.Array(HarnessSkillSummary) });
+export const HarnessSkillUsageMetricsAvailability = Schema.Struct({
+  status: Schema.Literal("unavailable"),
+  reason: Schema.Literal("skill-usage-not-attributed"),
+});
+export type HarnessSkillUsageMetricsAvailability = typeof HarnessSkillUsageMetricsAvailability.Type;
+
+export const HarnessSkillInventory = Schema.Struct({
+  skills: Schema.Array(HarnessSkillSummary),
+  usageMetrics: HarnessSkillUsageMetricsAvailability,
+});
 export type HarnessSkillInventory = typeof HarnessSkillInventory.Type;
 export const HarnessInventoryListInput = Schema.Struct({ scope: HarnessProposalScope });
 export type HarnessInventoryListInput = typeof HarnessInventoryListInput.Type;

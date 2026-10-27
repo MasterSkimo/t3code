@@ -74,6 +74,7 @@ import Migration0068 from "./Migrations/068_ShellStopRequestIndex.ts";
 import Migration0069 from "./Migrations/069_ThreadMessageSearch.ts";
 import Migration0070 from "./Migrations/070_PlotlineDags.ts";
 import Migration0071 from "./Migrations/071_Harness.ts";
+import Migration0072 from "./Migrations/072_HarnessEventCursor.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -148,6 +149,7 @@ const migrationEntries = [
   [69, "ThreadMessageSearch", Migration0069],
   [70, "PlotlineDags", Migration0070],
   [71, "Harness", Migration0071],
+  [72, "HarnessEventCursor", Migration0072],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

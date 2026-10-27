@@ -11,6 +11,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
+import * as Schedule from "effect/Schedule";
 
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -102,7 +103,7 @@ export const makeHarnessAnalysisService = Effect.gen(function* () {
       today,
       requestId,
     );
-    if (!budget.allowed || !budget.isNew) return { proposals: [] };
+    if (!budget.allowed || !budget.shouldRun) return { proposals: [] };
 
     const allSkills = yield* skillService.discover(scope);
     const serverSettings = yield* settings.getSettings.pipe(
@@ -209,10 +210,16 @@ export const makeHarnessAnalysisService = Effect.gen(function* () {
           confidence: proposal.confidence,
           rationale:
             redactSensitive(proposal.rationale) ?? "Supported by repeated project evidence.",
+          ...(requestId === undefined
+            ? {}
+            : {
+                idempotencyKey: `auto:${requestId}:${proposal.operation}:${proposal.targetSkillIds.join(",")}:${proposal.sourceRefs.join(",")}`,
+              }),
         })
         .pipe(Effect.map((value) => ({ kind: "created" as const, value })));
     };
     const created = yield* Effect.forEach(eligibleProposals, createOne, { concurrency: 1 });
+    if (requestId !== undefined) yield* proposals.completeAnalysisAttempt(scope, requestId);
     return {
       proposals: created.flatMap((result) => (result.kind === "created" ? [result.value] : [])),
     };
@@ -226,14 +233,7 @@ export const makeHarnessAnalysisService = Effect.gen(function* () {
       const projectShells = yield* projects.listShells().pipe(Effect.orElseSucceed(() => []));
       for (const project of projectShells) {
         if (event.projectId === project.id) {
-          yield* analyzeScope({ kind: "project", projectId: project.id }, event.id, true).pipe(
-            Effect.catchCause((cause) =>
-              Effect.logWarning("Automatic Harness analysis failed.", {
-                cause,
-                projectId: project.id,
-              }),
-            ),
-          );
+          yield* analyzeScope({ kind: "project", projectId: project.id }, event.id, true);
           return;
         }
         const projectThreads = yield* threads
@@ -241,20 +241,37 @@ export const makeHarnessAnalysisService = Effect.gen(function* () {
           .pipe(Effect.orElseSucceed(() => []));
         if (!event.threadId || !projectThreads.some((thread) => thread.id === event.threadId))
           continue;
-        yield* analyzeScope({ kind: "project", projectId: project.id }, event.id, true).pipe(
-          Effect.catchCause((cause) =>
-            Effect.logWarning("Automatic Harness analysis failed.", {
-              cause,
-              projectId: project.id,
-            }),
-          ),
-        );
+        yield* analyzeScope({ kind: "project", projectId: project.id }, event.id, true);
         break;
       }
     },
   );
 
-  yield* events.stream.pipe(Stream.runForEach(processAutomaticEvent), Effect.forkScoped);
+  const deliverAutomaticEvent = (event: HarnessEngine.HarnessAnalysisEvent) =>
+    processAutomaticEvent(event).pipe(
+      Effect.tap(() => events.acknowledge(event.id)),
+      Effect.catchCause((cause) =>
+        events.recordFailure(event.id).pipe(
+          Effect.flatMap((terminal) =>
+            terminal
+              ? Effect.logWarning("Automatic Harness event reached its retry limit.", {
+                  eventId: event.id,
+                  cause,
+                })
+              : Effect.failCause(cause),
+          ),
+        ),
+      ),
+    );
+
+  yield* Effect.suspend(() => events.stream.pipe(Stream.runForEach(deliverAutomaticEvent))).pipe(
+    Effect.tapCause((cause) =>
+      Effect.logWarning("Automatic Harness event delivery stopped; retrying.", { cause }),
+    ),
+    Effect.retry({ schedule: Schedule.exponential("1 second") }),
+    Effect.ignoreCause({ log: true }),
+    Effect.forkScoped,
+  );
 
   return HarnessAnalysisService.of({ analyze });
 });
