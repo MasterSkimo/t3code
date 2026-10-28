@@ -4,6 +4,11 @@ import {
   PlotlineDagListInput,
   PlotlineDagListResult,
   PlotlineDagSaveInput,
+  PlotlineDagAddTasksInput,
+  PlotlineDagUpdateTaskInput,
+  PlotlineDagAddEventInput,
+  ThreadId,
+  type PlotlineDagCreateInput,
   type PlotlineDag as PlotlineDagModel,
   type PlotlineDagTask,
 } from "@t3tools/contracts";
@@ -19,6 +24,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 const decodeDagJson = Schema.decodeUnknownSync(Schema.fromJsonString(PlotlineDag));
 const encodeDagJson = Schema.encodeSync(Schema.fromJsonString(PlotlineDag));
+const isPlotlineDagError = Schema.is(PlotlineDagError);
 const terminal = new Set(["done", "skipped"]);
 const transitions: Record<string, ReadonlyArray<string>> = {
   pending: ["running", "done", "failed", "skipped"],
@@ -39,6 +45,28 @@ export class PlotlineDagService extends Context.Service<
     ) => Stream.Stream<PlotlineDagListResult, PlotlineDagError>;
     readonly save: (
       input: PlotlineDagSaveInput,
+    ) => Effect.Effect<PlotlineDagModel, PlotlineDagError>;
+    readonly createForProject: (
+      projectId: string,
+      threadId: string,
+      runId: string | null,
+      input: PlotlineDagCreateInput,
+    ) => Effect.Effect<PlotlineDagModel, PlotlineDagError>;
+    readonly getForProject: (
+      projectId: string,
+      id: string,
+    ) => Effect.Effect<PlotlineDagModel, PlotlineDagError>;
+    readonly addTasks: (
+      projectId: string,
+      input: PlotlineDagAddTasksInput,
+    ) => Effect.Effect<PlotlineDagModel, PlotlineDagError>;
+    readonly updateTask: (
+      projectId: string,
+      input: PlotlineDagUpdateTaskInput,
+    ) => Effect.Effect<PlotlineDagModel, PlotlineDagError>;
+    readonly addEvent: (
+      projectId: string,
+      input: PlotlineDagAddEventInput,
     ) => Effect.Effect<PlotlineDagModel, PlotlineDagError>;
     readonly delete: (id: string, confirm: boolean) => Effect.Effect<void, PlotlineDagError>;
   }
@@ -71,6 +99,13 @@ function deriveState(tasks: ReadonlyArray<PlotlineDagTask>): PlotlineDagModel["s
   if (tasks.length > 0 && tasks.every((task) => terminal.has(task.state))) return "done";
   return "waiting";
 }
+
+const nextUpdatedAt = (previous: string | undefined, now: string) =>
+  previous !== undefined && now <= previous
+    ? DateTime.formatIso(
+        DateTime.toUtc(DateTime.add(DateTime.makeUnsafe(previous), { milliseconds: 1 })),
+      )
+    : now;
 
 function validateDag(dag: PlotlineDagModel, previous?: PlotlineDagModel): PlotlineDagError | null {
   const ids = new Set<string>();
@@ -152,52 +187,63 @@ const make = Effect.gen(function* () {
 
   const save: PlotlineDagService["Service"]["save"] = Effect.fn("PlotlineDagService.save")(
     function* (input) {
-      const oldRows = yield* sql<{
-        readonly payload_json: string;
-      }>`SELECT payload_json FROM plotline_dags WHERE dag_id = ${input.dag.id}`.pipe(
-        Effect.mapError(() => dagError("Could not read saved DAG data.", input.dag.id)),
-      );
-      const previous = oldRows[0]
-        ? yield* Effect.try({
-            try: () => decodeDagJson(oldRows[0]!.payload_json),
-            catch: () => dagError("Saved DAG data is invalid.", input.dag.id),
-          })
-        : undefined;
-      const base: PlotlineDagModel = {
-        ...input.dag,
-        createdAt: previous?.createdAt ?? input.dag.createdAt,
-        events: previous?.events ?? input.dag.events,
-      };
-      const validationError = validateDag(base, previous);
-      if (validationError) return yield* validationError;
+      const result = yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const oldRows = yield* sql<{
+              readonly payload_json: string;
+            }>`SELECT payload_json FROM plotline_dags WHERE dag_id = ${input.dag.id}`.pipe(
+              Effect.mapError(() => dagError("Could not read saved DAG data.", input.dag.id)),
+            );
+            const previous = oldRows[0]
+              ? yield* Effect.try({
+                  try: () => decodeDagJson(oldRows[0]!.payload_json),
+                  catch: () => dagError("Saved DAG data is invalid.", input.dag.id),
+                })
+              : undefined;
+            if (previous && input.dag.updatedAt !== previous.updatedAt)
+              return yield* dagError(
+                "DAG changed since it was loaded. Reload it before saving.",
+                input.dag.id,
+              );
+            const base: PlotlineDagModel = {
+              ...input.dag,
+              createdAt: previous?.createdAt ?? input.dag.createdAt,
+              events: previous?.events ?? input.dag.events,
+            };
+            const validationError = validateDag(base, previous);
+            if (validationError) return yield* validationError;
 
-      const now = DateTime.formatIso(DateTime.toUtc(yield* DateTime.now));
-      const state = deriveState(base.tasks);
-      const next: PlotlineDagModel = {
-        ...base,
-        state,
-        updatedAt: now,
-        startedAt: state === "waiting" ? null : (base.startedAt ?? now),
-        finishedAt: state === "done" || state === "failed" ? now : null,
-        tasks: base.tasks.map((task) => {
-          const old = previous?.tasks.find((candidate) => candidate.id === task.id);
-          if (old?.state === task.state) return task;
-          return {
-            ...task,
-            startedAt: task.state === "running" ? now : task.startedAt,
-            finishedAt: terminal.has(task.state) || task.state === "failed" ? now : null,
-          };
-        }),
-      };
-      const withEvent = appendEvent(
-        next,
-        `evt_${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
-        now,
-        previous ? "DAG updated." : `DAG created with ${next.tasks.length} task(s).`,
-        previous ? "info" : "ok",
-      );
-      const payload = encodeDagJson(withEvent);
-      yield* sql`
+            const now = nextUpdatedAt(
+              previous?.updatedAt,
+              DateTime.formatIso(DateTime.toUtc(yield* DateTime.now)),
+            );
+            const state = deriveState(base.tasks);
+            const next: PlotlineDagModel = {
+              ...base,
+              state,
+              updatedAt: now,
+              startedAt: state === "waiting" ? null : (base.startedAt ?? now),
+              finishedAt: state === "done" || state === "failed" ? now : null,
+              tasks: base.tasks.map((task) => {
+                const old = previous?.tasks.find((candidate) => candidate.id === task.id);
+                if (old?.state === task.state) return task;
+                return {
+                  ...task,
+                  startedAt: task.state === "running" ? now : task.startedAt,
+                  finishedAt: terminal.has(task.state) || task.state === "failed" ? now : null,
+                };
+              }),
+            };
+            const withEvent = appendEvent(
+              next,
+              `evt_${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
+              now,
+              previous ? "DAG updated." : `DAG created with ${next.tasks.length} task(s).`,
+              previous ? "info" : "ok",
+            );
+            const payload = encodeDagJson(withEvent);
+            yield* sql`
         INSERT INTO plotline_dags (dag_id, project_id, payload_json, updated_at)
         VALUES (${withEvent.id}, ${withEvent.projectId}, ${payload}, ${now})
         ON CONFLICT(dag_id) DO UPDATE SET
@@ -205,10 +251,225 @@ const make = Effect.gen(function* () {
           payload_json = excluded.payload_json,
           updated_at = excluded.updated_at
       `.pipe(Effect.mapError(() => dagError("Could not save DAG data.", withEvent.id)));
+            return withEvent;
+          }),
+        )
+        .pipe(
+          Effect.mapError((error) =>
+            isPlotlineDagError(error) ? error : dagError("Could not save DAG data.", input.dag.id),
+          ),
+        );
       yield* notify;
-      return withEvent;
+      return result;
     },
   );
+
+  const getForProject: PlotlineDagService["Service"]["getForProject"] = Effect.fn(
+    "PlotlineDagService.getForProject",
+  )(function* (projectId, id) {
+    const result = yield* list({ projectId });
+    const dag = result.dags.find((item) => item.id === id);
+    return dag ?? (yield* dagError("DAG was not found in the current project.", id));
+  });
+
+  const createForProject: PlotlineDagService["Service"]["createForProject"] = Effect.fn(
+    "PlotlineDagService.createForProject",
+  )(function* (projectId, threadId, runId, input) {
+    const now = DateTime.formatIso(DateTime.toUtc(yield* DateTime.now));
+    const id =
+      runId === null
+        ? `dag_${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`
+        : `dag_${threadId}_${runId}`;
+    if (runId !== null) {
+      const result = yield* list({ projectId });
+      const existing = result.dags.find((dag) => dag.id === id);
+      if (existing) return existing;
+    }
+    const dag: PlotlineDagModel = {
+      id,
+      projectId,
+      originatingThreadId: ThreadId.make(threadId),
+      title: input.title,
+      description: input.description,
+      workspace: null,
+      state: "waiting",
+      createdAt: now,
+      updatedAt: now,
+      startedAt: null,
+      finishedAt: null,
+      tasks: [],
+      events: [],
+    };
+    const withEvent = appendEvent(
+      dag,
+      `evt_${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
+      now,
+      `DAG created from thread ${threadId}.`,
+      "ok",
+    );
+    yield* sql`INSERT INTO plotline_dags (dag_id, project_id, payload_json, updated_at) VALUES (${id}, ${projectId}, ${encodeDagJson(withEvent)}, ${now}) ON CONFLICT(dag_id) DO NOTHING`.pipe(
+      Effect.mapError(() => dagError("Could not create DAG data.", id)),
+    );
+    const persisted = (yield* list({ projectId })).dags.find((dag) => dag.id === id) ?? withEvent;
+    yield* notify;
+    return persisted;
+  });
+
+  const mutate: (
+    projectId: string,
+    dagId: string,
+    operation: (dag: PlotlineDagModel) => Effect.Effect<PlotlineDagModel, PlotlineDagError>,
+  ) => Effect.Effect<PlotlineDagModel, PlotlineDagError> = (projectId, dagId, operation) =>
+    sql
+      .withTransaction(
+        Effect.gen(function* () {
+          const dag = yield* getForProject(projectId, dagId);
+          const next = yield* operation(dag);
+          if (next === dag) return dag;
+          const validationError = validateDag(next, dag);
+          if (validationError) return yield* validationError;
+          const now = nextUpdatedAt(
+            dag.updatedAt,
+            DateTime.formatIso(DateTime.toUtc(yield* DateTime.now)),
+          );
+          const saved: PlotlineDagModel = {
+            ...next,
+            state: deriveState(next.tasks),
+            updatedAt: now,
+            startedAt: deriveState(next.tasks) === "waiting" ? null : (dag.startedAt ?? now),
+            finishedAt: ["done", "failed"].includes(deriveState(next.tasks)) ? now : null,
+          };
+          const withEvent = { ...saved, events: saved.events };
+          yield* sql`UPDATE plotline_dags SET payload_json = ${encodeDagJson(withEvent)}, updated_at = ${now} WHERE dag_id = ${dagId} AND project_id = ${projectId}`.pipe(
+            Effect.mapError(() => dagError("Could not update DAG data.", dagId)),
+          );
+          return withEvent;
+        }),
+      )
+      .pipe(
+        Effect.mapError((error) =>
+          isPlotlineDagError(error) ? error : dagError("Could not update DAG data.", dagId),
+        ),
+        Effect.tap(() => notify),
+      );
+
+  const addTasks: PlotlineDagService["Service"]["addTasks"] = (projectId, input) =>
+    mutate(projectId, input.dagId, (dag) =>
+      Effect.gen(function* () {
+        const now = DateTime.formatIso(DateTime.toUtc(yield* DateTime.now));
+        const tasks: PlotlineDagTask[] = [];
+        for (const inputTask of input.tasks) {
+          const old = dag.tasks.find((task) => task.id === inputTask.id);
+          if (old) {
+            if (
+              old.title !== inputTask.title ||
+              old.description !== inputTask.description ||
+              old.effort !== inputTask.effort ||
+              old.dependsOn.join("\0") !== inputTask.dependsOn.join("\0")
+            )
+              return yield* dagError(
+                `Task id already exists with different content: ${inputTask.id}`,
+                dag.id,
+              );
+            continue;
+          }
+          tasks.push({
+            ...inputTask,
+            state: "pending",
+            threadId: null,
+            runId: null,
+            legacySessionIds: [],
+            agent: null,
+            createdAt: now,
+            updatedAt: now,
+            startedAt: null,
+            finishedAt: null,
+          });
+        }
+        if (tasks.length === 0) return dag;
+        return appendEvent(
+          { ...dag, tasks: [...dag.tasks, ...tasks] },
+          `evt_${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
+          now,
+          `Added ${tasks.length} task(s).`,
+          "info",
+        );
+      }),
+    );
+
+  const updateTask: PlotlineDagService["Service"]["updateTask"] = (projectId, input) =>
+    mutate(projectId, input.dagId, (dag) =>
+      Effect.gen(function* () {
+        const current = dag.tasks.find((task) => task.id === input.taskId);
+        if (!current) return yield* dagError("Task was not found in this DAG.", dag.id);
+        const now = DateTime.formatIso(DateTime.toUtc(yield* DateTime.now));
+        const task = {
+          ...current,
+          ...(input.title === undefined ? {} : { title: input.title }),
+          ...(input.description === undefined ? {} : { description: input.description }),
+          ...(input.effort === undefined ? {} : { effort: input.effort }),
+          ...(input.dependsOn === undefined ? {} : { dependsOn: input.dependsOn }),
+          ...(input.state === undefined ? {} : { state: input.state }),
+          ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
+          ...(input.runId === undefined ? {} : { runId: input.runId }),
+          ...(input.agent === undefined ? {} : { agent: input.agent }),
+          updatedAt: now,
+          ...(input.state === undefined || input.state === current.state
+            ? {}
+            : {
+                startedAt:
+                  input.state === "running" ? (current.startedAt ?? now) : current.startedAt,
+                finishedAt: terminal.has(input.state) || input.state === "failed" ? now : null,
+              }),
+        };
+        if (
+          [
+            "title",
+            "description",
+            "effort",
+            "dependsOn",
+            "state",
+            "threadId",
+            "runId",
+            "agent",
+          ].every(
+            (key) =>
+              input[key as keyof typeof input] === undefined ||
+              input[key as keyof typeof input] === current[key as keyof typeof current],
+          )
+        )
+          return dag;
+        const next = {
+          ...dag,
+          tasks: dag.tasks.map((item) => (item.id === task.id ? task : item)),
+        };
+        return appendEvent(
+          next,
+          `evt_${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
+          task.updatedAt,
+          `Updated task ${task.id}.`,
+          "info",
+          task.id,
+        );
+      }),
+    );
+
+  const addEvent: PlotlineDagService["Service"]["addEvent"] = (projectId, input) =>
+    mutate(projectId, input.dagId, (dag) =>
+      Effect.gen(function* () {
+        const now = DateTime.formatIso(DateTime.toUtc(yield* DateTime.now));
+        if (input.taskId && !dag.tasks.some((task) => task.id === input.taskId))
+          return yield* dagError("Task was not found in this DAG.", dag.id);
+        return appendEvent(
+          dag,
+          `evt_${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
+          now,
+          input.message,
+          input.level ?? "info",
+          input.taskId ?? null,
+        );
+      }),
+    );
 
   const remove: PlotlineDagService["Service"]["delete"] = Effect.fn("PlotlineDagService.delete")(
     function* (id, confirm) {
@@ -220,7 +481,17 @@ const make = Effect.gen(function* () {
     },
   );
 
-  return PlotlineDagService.of({ list, subscribe, save, delete: remove });
+  return PlotlineDagService.of({
+    list,
+    subscribe,
+    save,
+    createForProject,
+    getForProject,
+    addTasks,
+    updateTask,
+    addEvent,
+    delete: remove,
+  });
 });
 
 export const layer = Layer.effect(PlotlineDagService, make);

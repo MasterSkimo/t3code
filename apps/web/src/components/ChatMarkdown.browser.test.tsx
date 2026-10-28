@@ -122,6 +122,13 @@ it("shows unavailable audio when a workspace embed has no thread", async () => {
   expect(screen.container.querySelector("audio")).toBeNull();
 });
 
+it("navigates root-relative Markdown links within the app", async () => {
+  setup();
+  await using screen = await renderText("[DAG](/dags?dagId=dag-123)");
+  await userEvent.click(screen.getByRole("link", { name: "DAG" }));
+  expect(screen.router?.latestLocation.href).toBe("/dags?dagId=dag-123");
+});
+
 describe("ChatMarkdown favicon privacy", () => {
   it("suppresses private link images while preserving public links across updates", async () => {
     setup();

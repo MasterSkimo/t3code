@@ -16,6 +16,10 @@ Ordinary coding tasks need no T3 tools.
 - In your reply, a thread's first mention is its \`link\` verbatim. No \`link\`: \`[title](t3-thread://v1/<exact id>)\`. Never a plain title or bare id.
 - A secret: call \`request_secret\` yourself. Pass its \`secretRef\` to a T3 tool, or use \`delivery: "file"\` for a shell command. Never ask in chat or invent one. When asked only to schedule, \`schedule_task\` without running its prompt.
 - T3 tools may load late. Try the name once before you call it absent.`,
+  `### Native Plotline DAGs
+
+- In T3, requests to create a DAG, plan dependent work as a DAG, or update an existing DAG mean the native Plotline DAG. Use \`plotline_dag_create\`, \`plotline_dag_add_tasks\`, and \`plotline_dag_update_task\` as needed; use list/get to find or verify it. Update the requested DAG instead of creating an unrelated one, then return a link to \`/dags?dagId=<id>\` when you have its ID.
+- Use Markdown or Mermaid only when explicitly requested. If the native tools are unavailable or fail, say the native DAG was not created or updated; never claim success or silently substitute a file. Respect Plan mode and its read-only boundary.`,
   `### Visuals and preview
 
 - Answer data with a trend or comparison with a chart, and show any visual the user asks for here: pass its HTML to \`html_preview\`, then \`html_render\`. If the visual is a file, pass that file's HTML. A screenshot on disk or a text description does not show it. Never start a server for it. Tools a web page exposes give data only. Never use them to show results. Asked for an image to post, send, or use elsewhere: a \`.png\` file and its path, never \`html_render\`.

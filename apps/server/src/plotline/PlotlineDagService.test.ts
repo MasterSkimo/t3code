@@ -126,4 +126,76 @@ describe("PlotlineDagService", () => {
       ),
     ),
   );
+
+  it.effect(
+    "adds tasks incrementally, makes identical retries idempotent, and scopes DAG reads to the project",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`CREATE TABLE plotline_dags (dag_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, payload_json TEXT NOT NULL, updated_at TEXT NOT NULL)`;
+        const service = yield* PlotlineDags.PlotlineDagService;
+        const dag = yield* service.createForProject("project:a", "thread:a", "run:a", {
+          title: "Migration",
+          description: "",
+        });
+        const createRetry = yield* service.createForProject("project:a", "thread:a", "run:a", {
+          title: "Migration",
+          description: "",
+        });
+        assert.strictEqual(createRetry.id, dag.id);
+        const tasks = [
+          { id: "one", title: "One", description: "", effort: 2, dependsOn: [] },
+          { id: "two", title: "Two", description: "", effort: 1, dependsOn: ["one"] },
+        ];
+        const first = yield* service.addTasks("project:a", { dagId: dag.id, tasks });
+        const retry = yield* service.addTasks("project:a", { dagId: dag.id, tasks });
+        assert.strictEqual(first.tasks.length, 2);
+        assert.strictEqual(retry.tasks.length, 2);
+        yield* Effect.all(
+          [
+            service.addTasks("project:a", {
+              dagId: dag.id,
+              tasks: [
+                { id: "three", title: "Three", description: "", effort: 1, dependsOn: ["one"] },
+              ],
+            }),
+            service.addTasks("project:a", {
+              dagId: dag.id,
+              tasks: [
+                { id: "four", title: "Four", description: "", effort: 1, dependsOn: ["two"] },
+              ],
+            }),
+          ],
+          { concurrency: "unbounded" },
+        );
+        assert.deepStrictEqual(
+          (yield* service.getForProject("project:a", dag.id)).tasks.map(({ id }) => id),
+          ["one", "two", "three", "four"],
+        );
+        const beforeNoOp = yield* service.getForProject("project:a", dag.id);
+        const noOp = yield* service.updateTask("project:a", { dagId: dag.id, taskId: "one" });
+        assert.strictEqual(noOp.updatedAt, beforeNoOp.updatedAt);
+        const staleSave = yield* Effect.exit(service.save({ dag }));
+        assert.isTrue(Exit.isFailure(staleSave));
+        assert.strictEqual((yield* service.getForProject("project:a", dag.id)).tasks.length, 4);
+        const outside = yield* Effect.exit(service.getForProject("project:b", dag.id));
+        assert.isTrue(Exit.isFailure(outside));
+        const cycle = yield* Effect.exit(
+          service.updateTask("project:a", {
+            dagId: dag.id,
+            taskId: "one",
+            dependsOn: ["two"],
+          }),
+        );
+        assert.isTrue(Exit.isFailure(cycle));
+      }).pipe(
+        Effect.provide(
+          PlotlineDags.layer.pipe(
+            Layer.provideMerge(
+              Layer.mergeAll(NodeSqliteClient.layer({ filename: ":memory:" }), NodeCrypto.layer),
+            ),
+          ),
+        ),
+      ),
+  );
 });

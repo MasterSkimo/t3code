@@ -14,6 +14,7 @@ import * as Schema from "effect/Schema";
 import * as Schedule from "effect/Schedule";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as PlotlineDagService from "../plotline/PlotlineDagService.ts";
+import { findPlotlineTaskRunMatches } from "./plotlineTaskTracking.ts";
 import { classifySuccessfulRun, isCorrectionPrompt } from "./signalQuality.ts";
 
 const UnknownJsonString = Schema.fromJsonString(Schema.Unknown);
@@ -200,6 +201,7 @@ export function makeSignificantEventCollector(): SignificantEventCollector {
     Array<{ id: string; runId: string; at: string; threadId: string }>
   >();
   const taskStates = new Map<string, { state: string; updatedAt: string }>();
+  let plotlineDags: ReadonlyArray<PlotlineDag> = [];
 
   const add = (event: HarnessSignificantEvent): ReadonlyArray<HarnessSignificantEvent> => {
     if (seen.has(event.id)) return [];
@@ -281,6 +283,11 @@ export function makeSignificantEventCollector(): SignificantEventCollector {
     }
 
     if (event.type !== "run.updated") return [];
+    const linkedTasks = findPlotlineTaskRunMatches(plotlineDags, event.threadId, event.payload.id);
+    const taskRefs = linkedTasks.flatMap((task) => [
+      `plotline:${task.dagId}`,
+      `plotline:${task.dagId}:${task.taskId}`,
+    ]);
     if (event.payload.status === "failed") {
       return add({
         id: `failure:${event.id}`,
@@ -289,7 +296,7 @@ export function makeSignificantEventCollector(): SignificantEventCollector {
         type: "failure",
         summary: "The agent run failed.",
         evidence: ["Run status: failed."],
-        sourceRefs: [event.id, event.payload.id],
+        sourceRefs: [event.id, event.payload.id, ...taskRefs],
       });
     }
     if (event.payload.status === "completed") {
@@ -316,7 +323,12 @@ export function makeSignificantEventCollector(): SignificantEventCollector {
           ...(latest?.text.trim() ? [redactEvidence(latest.text)] : []),
           "Run status: completed.",
         ],
-        sourceRefs: [event.id, event.payload.id, ...(latest ? [latest.id, latest.messageId] : [])],
+        sourceRefs: [
+          event.id,
+          event.payload.id,
+          ...taskRefs,
+          ...(latest ? [latest.id, latest.messageId] : []),
+        ],
       });
     }
     return [];
@@ -325,6 +337,7 @@ export function makeSignificantEventCollector(): SignificantEventCollector {
   const observePlotlineDags = (
     dags: ReadonlyArray<PlotlineDag>,
   ): ReadonlyArray<HarnessSignificantEvent> => {
+    plotlineDags = dags;
     const found: Array<HarnessSignificantEvent> = [];
     for (const dag of dags) {
       for (const task of dag.tasks) {

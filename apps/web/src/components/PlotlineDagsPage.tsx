@@ -69,7 +69,13 @@ function stateClass(state: PlotlineTaskState) {
   }
 }
 
-export function PlotlineDagsPage() {
+export function PlotlineDagsPage({
+  selectedDagId,
+  onSelectDag,
+}: {
+  selectedDagId?: string | undefined;
+  onSelectDag: (dagId: string | undefined) => void;
+}) {
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const projects = useProjects();
   const environmentId = primaryEnvironmentId ?? projects[0]?.environmentId ?? null;
@@ -79,7 +85,6 @@ export function PlotlineDagsPage() {
   const projectId = projectOptions.some((project) => project.id === selectedProjectId)
     ? selectedProjectId
     : projectOptions[0]?.id || "";
-  const [selectedDagId, setSelectedDagId] = useState<string | null>(null);
   const [dagTitle, setDagTitle] = useState("");
   const [taskTitle, setTaskTitle] = useState("");
   const [dependencyId, setDependencyId] = useState("");
@@ -99,12 +104,14 @@ export function PlotlineDagsPage() {
     serverEnvironment.savePlotlineDag.permissionAtom(environmentId as EnvironmentId | null),
   );
   const dags = dagsQuery.data?.dags ?? [];
-  const selectedDag = dags.find((dag) => dag.id === selectedDagId) ?? dags[0] ?? null;
+  const selectedDag = selectedDagId
+    ? (dags.find((dag) => dag.id === selectedDagId) ?? null)
+    : (dags[0] ?? null);
 
   const save = async (dag: PlotlineDag) => {
     if (!environmentId) return;
     await saveDag({ environmentId, input: { dag } });
-    setSelectedDagId(dag.id);
+    onSelectDag(dag.id);
   };
 
   const createDag = async () => {
@@ -163,7 +170,7 @@ export function PlotlineDagsPage() {
   const removeSelectedDag = async () => {
     if (!selectedDag || !environmentId) return;
     await deleteDag({ environmentId, input: { id: selectedDag.id, confirm: true } });
-    setSelectedDagId(null);
+    onSelectDag(undefined);
   };
 
   const importPlotlineFile = async (file: File | undefined) => {
@@ -338,7 +345,7 @@ export function PlotlineDagsPage() {
               dags.map((dag) => (
                 <button
                   key={dag.id}
-                  onClick={() => setSelectedDagId(dag.id)}
+                  onClick={() => onSelectDag(dag.id)}
                   className={`rounded-md px-3 py-2 text-left ${selectedDag?.id === dag.id ? "bg-accent text-accent-foreground" : "hover:bg-muted"}`}
                 >
                   <span className="block truncate text-sm font-medium">{dag.title}</span>

@@ -160,6 +160,49 @@ describe("collectSignificantEvents", () => {
     ]);
   });
 
+  it("links run signals to a Plotline task only by its exact thread and run IDs", () => {
+    const collector = makeSignificantEventCollector();
+    const linkedDag = decodeDag({
+      id: "dag_linked",
+      projectId: "project_test",
+      title: "Linked DAG",
+      description: "",
+      workspace: null,
+      state: "running",
+      createdAt: "2026-10-27T12:00:00.000Z",
+      updatedAt: "2026-10-27T12:00:00.000Z",
+      startedAt: "2026-10-27T12:00:00.000Z",
+      finishedAt: null,
+      tasks: [
+        {
+          id: "task_linked",
+          title: "Build dashboard",
+          description: "",
+          state: "running",
+          effort: 2,
+          dependsOn: [],
+          threadId: "thread_test",
+          runId: "run:linked",
+          legacySessionIds: [],
+          agent: null,
+          createdAt: "2026-10-27T12:00:00.000Z",
+          updatedAt: "2026-10-27T12:00:00.000Z",
+          startedAt: "2026-10-27T12:00:00.000Z",
+          finishedAt: null,
+        },
+      ],
+      events: [],
+    });
+
+    collector.observePlotlineDags([linkedDag]);
+    const signal = collector.observe(run("run:linked", "completed"));
+    expect(signal).toHaveLength(1);
+    expect(signal[0]?.sourceRefs).toContain("plotline:dag_linked:task_linked");
+
+    const otherRun = collector.observe(run("run:unlinked", "completed"));
+    expect(otherRun[0]?.sourceRefs).not.toContain("plotline:dag_linked:task_linked");
+  });
+
   it("persists completed-run signals and emits a separate signal only after explicit validation", () => {
     const completed = run("run:validated", "completed");
     const collector = makeSignificantEventCollector();
