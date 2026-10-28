@@ -99,9 +99,9 @@ jobs:
             echo "AppImage extraction did not produce a nonempty squashfs-root." >&2
             exit 1
           fi
-          packaged_executable="$(find "$extract_dir/squashfs-root/usr/lib" -type f -name t3code -perm /111 -print -quit)"
+          packaged_executable="$(find "$extract_dir/squashfs-root" -type f -name t3code -perm /111 -print -quit)"
           if [[ -z "$packaged_executable" ]]; then
-            echo "Could not find the packaged executable under usr/lib." >&2
+            echo "Could not find the packaged executable in the AppImage." >&2
             exit 1
           fi
           executable_type="$(file -b "$packaged_executable")"
