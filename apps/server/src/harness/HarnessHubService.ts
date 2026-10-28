@@ -10,7 +10,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as ProjectService from "../project/ProjectService.ts";
-import { discoverHarnessHub } from "./hubDiscovery.ts";
+import { discoverFederatedCatalog } from "./federatedCatalog.ts";
 
 export class HarnessHubService extends Context.Service<
   HarnessHubService,
@@ -36,7 +36,7 @@ const make = Effect.gen(function* () {
     }
     const resources = yield* Effect.tryPromise({
       try: () =>
-        discoverHarnessHub({
+        discoverFederatedCatalog({
           workspaceRoot,
           homeDirectory,
           ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
