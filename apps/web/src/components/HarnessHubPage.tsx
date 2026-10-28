@@ -35,7 +35,7 @@ function proposalScope(proposal: HarnessProposal) {
 }
 
 function scopeLabel(resource: HubResource) {
-  return resource.scope === "global" ? "Global" : "Projet";
+  return resource.scope === "global" ? "Global" : resource.scope === "ancestor" ? "Ancêtre" : "Projet";
 }
 
 function isTrackedMcpProvider(value: string | undefined): value is "claude" | "opencode" {
@@ -217,7 +217,7 @@ export function HarnessHubPage() {
     }
   };
   const showScopePreview = async (resource: HubResource) => {
-    if (!activeEnvironmentId || !projectId || resource.type !== "skill" || !canOperate) return;
+    if (!activeEnvironmentId || !projectId || resource.type !== "skill" || !canOperate || resource.scope === "ancestor") return;
     const result = await previewHarnessScope({
       environmentId: activeEnvironmentId,
       input: {
@@ -253,7 +253,7 @@ export function HarnessHubPage() {
     }
   };
   const previewMcpDistribution = async (resource: HubResource) => {
-    if (!activeEnvironmentId || !canOperate || resource.type !== "mcp") return;
+    if (!activeEnvironmentId || !canOperate || resource.type !== "mcp" || resource.scope === "ancestor") return;
     const result = await previewHarnessMcpDistribution({
       environmentId: activeEnvironmentId,
       input: {
@@ -295,7 +295,7 @@ export function HarnessHubPage() {
     }
   };
   const adoptMcpConfiguration = async (resource: HubResource) => {
-    if (!activeEnvironmentId || !canOperate || !isTrackedMcpProvider(resource.provider)) return;
+    if (!activeEnvironmentId || !canOperate || resource.scope === "ancestor" || !isTrackedMcpProvider(resource.provider)) return;
     const result = await adoptHarnessMcp({
       environmentId: activeEnvironmentId,
       input: {
