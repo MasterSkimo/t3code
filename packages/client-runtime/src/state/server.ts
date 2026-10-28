@@ -1290,6 +1290,21 @@ export function createServerEnvironmentAtoms<R, E>(
       execute: (input: EnvironmentRpcInput<typeof WS_METHODS.harnessInventoryList>) =>
         requestGuarded(WS_METHODS.harnessInventoryList, input),
     }),
+    harnessHubResources: createEnvironmentQueryAtomFamily(runtime, {
+      label: "environment-data:server:harness:hub-resources",
+      execute: (input: EnvironmentRpcInput<typeof WS_METHODS.harnessHubList>) =>
+        requestGuarded(WS_METHODS.harnessHubList, input),
+    }),
+    harnessMcpDeployments: createEnvironmentQueryAtomFamily(runtime, {
+      label: "environment-data:server:harness:mcp-deployments",
+      execute: (input: EnvironmentRpcInput<typeof WS_METHODS.harnessMcpDeployments>) =>
+        requestGuarded(WS_METHODS.harnessMcpDeployments, input),
+    }),
+    harnessScopeHistory: createEnvironmentQueryAtomFamily(runtime, {
+      label: "environment-data:server:harness:scope-history",
+      execute: (input: EnvironmentRpcInput<typeof WS_METHODS.harnessScopeHistory>) =>
+        requestGuarded(WS_METHODS.harnessScopeHistory, input),
+    }),
     // A cold transcript scan is measured in seconds, so keep the result around
     // long enough that switching windows or re-rendering does not rescan.
     usageSummary: createEnvironmentRpcQueryAtomFamily(runtime, {
@@ -1520,6 +1535,38 @@ export function createServerEnvironmentAtoms<R, E>(
     createHarnessProposal: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:harness:proposal:create",
       tag: WS_METHODS.harnessProposalsCreate,
+    }),
+    reviseHarnessProposal: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:harness:proposal:revise",
+      tag: WS_METHODS.harnessProposalsRevise,
+    }),
+    previewHarnessScope: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:harness:scope:preview",
+      tag: WS_METHODS.harnessScopePreview,
+    }),
+    previewHarnessMcpDistribution: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:harness:mcp:preview",
+      tag: WS_METHODS.harnessMcpDistributionPreview,
+    }),
+    applyHarnessMcpDistribution: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:harness:mcp:apply",
+      tag: WS_METHODS.harnessMcpDistributionApply,
+    }),
+    adoptHarnessMcp: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:harness:mcp:adopt",
+      tag: WS_METHODS.harnessMcpAdopt,
+    }),
+    untrackHarnessMcp: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:harness:mcp:untrack",
+      tag: WS_METHODS.harnessMcpUntrack,
+    }),
+    applyHarnessScope: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:harness:scope:apply",
+      tag: WS_METHODS.harnessScopeApply,
+    }),
+    rollbackHarnessScope: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:harness:scope:rollback",
+      tag: WS_METHODS.harnessScopeRollback,
     }),
     approveHarnessProposal: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:harness:proposal:approve",

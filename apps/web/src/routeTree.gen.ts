@@ -21,6 +21,7 @@ import { Route as ChatUsageRouteImport } from './routes/_chat.usage'
 import { Route as ChatSettingsRouteImport } from './routes/_chat.settings'
 import { Route as ChatPullRequestsRouteImport } from './routes/_chat.pull-requests'
 import { Route as ChatNewRouteImport } from './routes/_chat.new'
+import { Route as ChatHarnessRouteImport } from './routes/_chat.harness'
 import { Route as ChatDagsRouteImport } from './routes/_chat.dags'
 import { Route as ChatSettingsWorktreesRouteImport } from './routes/_chat.settings.worktrees'
 import { Route as ChatSettingsThreadsRouteImport } from './routes/_chat.settings.threads'
@@ -107,6 +108,11 @@ const ChatPullRequestsRoute = ChatPullRequestsRouteImport.update({
 const ChatNewRoute = ChatNewRouteImport.update({
   id: '/new',
   path: '/new',
+  getParentRoute: () => ChatRoute,
+} as any)
+const ChatHarnessRoute = ChatHarnessRouteImport.update({
+  id: '/harness',
+  path: '/harness',
   getParentRoute: () => ChatRoute,
 } as any)
 const ChatDagsRoute = ChatDagsRouteImport.update({
@@ -263,6 +269,7 @@ export interface FileRoutesByFullPath {
   '/pair': typeof PairRoute
   '/welcome': typeof WelcomeRoute
   '/dags': typeof ChatDagsRoute
+  '/harness': typeof ChatHarnessRoute
   '/new': typeof ChatNewRoute
   '/pull-requests': typeof ChatPullRequestsRoute
   '/settings': typeof ChatSettingsRouteWithChildren
@@ -303,6 +310,7 @@ export interface FileRoutesByTo {
   '/pair': typeof PairRoute
   '/welcome': typeof WelcomeRoute
   '/dags': typeof ChatDagsRoute
+  '/harness': typeof ChatHarnessRoute
   '/new': typeof ChatNewRoute
   '/pull-requests': typeof ChatPullRequestsRoute
   '/settings': typeof ChatSettingsRouteWithChildren
@@ -346,6 +354,7 @@ export interface FileRoutesById {
   '/pair': typeof PairRoute
   '/welcome': typeof WelcomeRoute
   '/_chat/dags': typeof ChatDagsRoute
+  '/_chat/harness': typeof ChatHarnessRoute
   '/_chat/new': typeof ChatNewRoute
   '/_chat/pull-requests': typeof ChatPullRequestsRoute
   '/_chat/settings': typeof ChatSettingsRouteWithChildren
@@ -390,6 +399,7 @@ export interface FileRouteTypes {
     | '/pair'
     | '/welcome'
     | '/dags'
+    | '/harness'
     | '/new'
     | '/pull-requests'
     | '/settings'
@@ -430,6 +440,7 @@ export interface FileRouteTypes {
     | '/pair'
     | '/welcome'
     | '/dags'
+    | '/harness'
     | '/new'
     | '/pull-requests'
     | '/settings'
@@ -472,6 +483,7 @@ export interface FileRouteTypes {
     | '/pair'
     | '/welcome'
     | '/_chat/dags'
+    | '/_chat/harness'
     | '/_chat/new'
     | '/_chat/pull-requests'
     | '/_chat/settings'
@@ -601,6 +613,13 @@ declare module '@tanstack/react-router' {
       path: '/new'
       fullPath: '/new'
       preLoaderRoute: typeof ChatNewRouteImport
+      parentRoute: typeof ChatRoute
+    }
+    '/_chat/harness': {
+      id: '/_chat/harness'
+      path: '/harness'
+      fullPath: '/harness'
+      preLoaderRoute: typeof ChatHarnessRouteImport
       parentRoute: typeof ChatRoute
     }
     '/_chat/dags': {
@@ -864,6 +883,7 @@ const ChatSettingsRouteWithChildren = ChatSettingsRoute._addFileChildren(
 
 interface ChatRouteChildren {
   ChatDagsRoute: typeof ChatDagsRoute
+  ChatHarnessRoute: typeof ChatHarnessRoute
   ChatNewRoute: typeof ChatNewRoute
   ChatPullRequestsRoute: typeof ChatPullRequestsRoute
   ChatSettingsRoute: typeof ChatSettingsRouteWithChildren
@@ -875,6 +895,7 @@ interface ChatRouteChildren {
 
 const ChatRouteChildren: ChatRouteChildren = {
   ChatDagsRoute: ChatDagsRoute,
+  ChatHarnessRoute: ChatHarnessRoute,
   ChatNewRoute: ChatNewRoute,
   ChatPullRequestsRoute: ChatPullRequestsRoute,
   ChatSettingsRoute: ChatSettingsRouteWithChildren,

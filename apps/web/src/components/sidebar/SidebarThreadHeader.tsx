@@ -1,4 +1,11 @@
-import { FolderPlusIcon, SearchIcon, SquarePenIcon, WorkflowIcon, XIcon } from "lucide-react";
+import {
+  FolderPlusIcon,
+  SearchIcon,
+  ShieldCheckIcon,
+  SquarePenIcon,
+  WorkflowIcon,
+  XIcon,
+} from "lucide-react";
 import {
   type ComponentProps,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -18,6 +25,7 @@ export interface SidebarThreadHeaderProps {
   projectScope: ReactNode;
   onNewProject: () => void;
   onOpenDags: () => void;
+  onOpenHarness: () => void;
   onNewThread: (event: ReactMouseEvent) => void;
   newThreadDisabled: boolean;
   newThreadShortcutLabel: string | null | undefined;
@@ -39,6 +47,7 @@ export function SidebarThreadHeader({
   projectScope,
   onNewProject,
   onOpenDags,
+  onOpenHarness,
   onNewThread,
   newThreadDisabled,
   newThreadShortcutLabel,
@@ -106,6 +115,9 @@ export function SidebarThreadHeader({
       <div className="flex shrink-0 items-center">
         <SidebarHeaderIconButton label="Open Plotline DAGs" onClick={onOpenDags}>
           <WorkflowIcon />
+        </SidebarHeaderIconButton>
+        <SidebarHeaderIconButton label="Open Harness Hub" onClick={onOpenHarness}>
+          <ShieldCheckIcon />
         </SidebarHeaderIconButton>
         {hasProjects ? (
           <>

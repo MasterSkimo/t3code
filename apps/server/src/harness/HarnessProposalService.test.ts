@@ -117,6 +117,78 @@ describe("HarnessProposalService", () => {
       ),
   );
 
+  it.effect(
+    "revises pending proposals with validation, optimistic concurrency, and a history snapshot",
+    () =>
+      withDb(
+        Effect.gen(function* () {
+          const service = yield* setup;
+          const proposal = yield* service.create({
+            scope: { kind: "global" },
+            operation: "create",
+            skillName: "release-helper",
+            targetSkillIds: [],
+            evidence: ["Repeated release checklist"],
+            sourceRefs: ["event:1"],
+            contentDiff: { before: null, after: "---\nname: release-helper\n---\n" },
+            engineId: "native-v1",
+            engineVersion: "1",
+            confidence: 0.7,
+            rationale: "Initial rationale.",
+          });
+          const revised = yield* service.revise({
+            id: proposal.id,
+            expectedUpdatedAt: proposal.updatedAt,
+            patch: { confidence: 0.95, rationale: "Reviewed and improved." },
+          });
+          assert.notStrictEqual(revised.updatedAt, proposal.updatedAt);
+          assert.strictEqual(revised.confidence, 0.95);
+          assert.strictEqual(revised.rationale, "Reviewed and improved.");
+          assert.strictEqual(revised.status, "pending");
+          assert.strictEqual(revised.appliedReceipt, null);
+          const history = yield* service.audit(proposal.id);
+          assert.deepStrictEqual(
+            history.map(({ action }) => action),
+            ["created", "revised"],
+          );
+          const snapshot = JSON.parse(history[1]!.note!) as {
+            before: { confidence: number; rationale: string };
+            after: { confidence: number; rationale: string };
+          };
+          assert.strictEqual(snapshot.before.confidence, 0.7);
+          assert.strictEqual(snapshot.before.rationale, "Initial rationale.");
+          assert.strictEqual(snapshot.after.confidence, 0.95);
+          assert.strictEqual(snapshot.after.rationale, "Reviewed and improved.");
+          const stale = yield* Effect.flip(
+            service.revise({
+              id: proposal.id,
+              expectedUpdatedAt: proposal.updatedAt,
+              patch: { rationale: "Stale write." },
+            }),
+          );
+          assert.strictEqual(stale._tag, "HarnessError");
+          const invalid = yield* Effect.flip(
+            service.revise({
+              id: proposal.id,
+              expectedUpdatedAt: revised.updatedAt,
+              patch: { confidence: 1.5 },
+            }),
+          );
+          assert.strictEqual(invalid._tag, "HarnessError");
+          assert.strictEqual((yield* service.audit(proposal.id)).length, 2);
+          const approved = yield* service.approve(proposal.id);
+          const locked = yield* Effect.flip(
+            service.revise({
+              id: proposal.id,
+              expectedUpdatedAt: approved.updatedAt,
+              patch: { rationale: "Cannot alter after decision." },
+            }),
+          );
+          assert.strictEqual(locked._tag, "HarnessError");
+        }),
+      ),
+  );
+
   it.effect("validates confidence and keeps project defaults scoped with global fallback", () =>
     withDb(
       Effect.gen(function* () {

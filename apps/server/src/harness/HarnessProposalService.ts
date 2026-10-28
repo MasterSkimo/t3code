@@ -1,12 +1,15 @@
 import {
   HarnessAnalysisBudget,
+  HarnessContentDiff,
   HarnessDefaults,
   HarnessDefaultsSetInput,
   HarnessError,
   HarnessProposal,
   HarnessProposalCreateInput,
+  HarnessProposalEditInput,
   HarnessProposalListInput,
   HarnessProposalListResult,
+  type HarnessProposalEditPatch,
   type HarnessProposal as Proposal,
   type HarnessSkillReceipt,
   type HarnessAuditEntry as AuditEntry,
@@ -19,6 +22,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -29,6 +33,27 @@ const decodeProposal = Schema.decodeUnknownSync(Schema.fromJsonString(HarnessPro
 const encodeProposal = Schema.encodeSync(Schema.fromJsonString(HarnessProposal));
 const decodeDefaults = Schema.decodeUnknownSync(Schema.fromJsonString(HarnessDefaults));
 const encodeDefaults = Schema.encodeSync(Schema.fromJsonString(HarnessDefaults));
+const ProposalRevisionSnapshot = Schema.Struct({
+  before: Schema.Struct({
+    skillName: Schema.String,
+    targetSkillIds: Schema.Array(Schema.String),
+    evidence: Schema.Array(Schema.String),
+    contentDiff: HarnessContentDiff,
+    confidence: Schema.Number,
+    rationale: Schema.String,
+  }),
+  after: Schema.Struct({
+    skillName: Schema.String,
+    targetSkillIds: Schema.Array(Schema.String),
+    evidence: Schema.Array(Schema.String),
+    contentDiff: HarnessContentDiff,
+    confidence: Schema.Number,
+    rationale: Schema.String,
+  }),
+});
+const encodeProposalRevisionSnapshot = Schema.encodeSync(
+  Schema.fromJsonString(ProposalRevisionSnapshot),
+);
 const isHarnessError = Schema.is(HarnessError);
 const scopeKey = (scope: HarnessProposal["scope"]) =>
   scope.kind === "global" ? "global" : `project:${scope.projectId}`;
@@ -39,6 +64,7 @@ export class HarnessProposalService extends Context.Service<
     readonly create: (
       input: HarnessProposalCreateInput & { readonly idempotencyKey?: string },
     ) => Effect.Effect<Proposal, HarnessError>;
+    readonly revise: (input: HarnessProposalEditInput) => Effect.Effect<Proposal, HarnessError>;
     readonly list: (
       input: HarnessProposalListInput,
     ) => Effect.Effect<HarnessProposalListResult, HarnessError>;
@@ -108,6 +134,7 @@ const make = Effect.gen(function* () {
     proposal: Proposal,
     action:
       | "created"
+      | "revised"
       | "approved"
       | "rejected"
       | "apply_started"
@@ -234,6 +261,130 @@ const make = Effect.gen(function* () {
       return { proposals: proposals.map(publicProposal) };
     },
   );
+
+  const revise: HarnessProposalService["Service"]["revise"] = Effect.fn(
+    "HarnessProposalService.revise",
+  )(function* ({ id: proposalId, expectedUpdatedAt, patch }) {
+    const edits = Object.fromEntries(
+      Object.entries(patch).filter(([, value]) => value !== undefined),
+    ) as HarnessProposalEditPatch;
+    yield* sql
+      .withTransaction(
+        Effect.gen(function* () {
+          const current = yield* read(proposalId);
+          if (current.status !== "pending")
+            return yield* error("Only pending proposals can be revised.", proposalId);
+          if (current.updatedAt !== expectedUpdatedAt)
+            return yield* error("Harness proposal changed since it was loaded.", proposalId);
+          if (Object.keys(edits).length === 0)
+            return yield* error("A proposal revision must change at least one field.", proposalId);
+
+          const observedAt = yield* now();
+          const currentTime = Date.parse(current.updatedAt);
+          if (!Number.isFinite(currentTime))
+            return yield* error("Saved Harness proposal has an invalid update time.", proposalId);
+          const updatedAt =
+            observedAt > current.updatedAt
+              ? observedAt
+              : Option.match(DateTime.make(currentTime + 1), {
+                  onNone: () => current.updatedAt,
+                  onSome: DateTime.formatIso,
+                });
+          if (updatedAt === current.updatedAt)
+            return yield* error("Saved Harness proposal has an invalid update time.", proposalId);
+          const next: Proposal = {
+            ...current,
+            skillName: edits.skillName ?? current.skillName,
+            targetSkillIds: edits.targetSkillIds ?? current.targetSkillIds,
+            evidence: edits.evidence ?? current.evidence,
+            contentDiff: edits.contentDiff ?? current.contentDiff,
+            confidence: edits.confidence ?? current.confidence,
+            rationale: edits.rationale ?? current.rationale,
+            updatedAt,
+          };
+          const targetIds = new Set(next.targetSkillIds);
+          if (!Number.isFinite(next.confidence) || next.confidence < 0 || next.confidence > 1)
+            return yield* error("Proposal confidence must be between 0 and 1.", proposalId);
+          if (
+            targetIds.size !== next.targetSkillIds.length ||
+            next.targetSkillIds.some((value) => !value.trim())
+          )
+            return yield* error(
+              "Proposal target skill ids must be unique and non-empty.",
+              proposalId,
+            );
+          if (!next.skillName.trim() || next.skillName.length > 120)
+            return yield* error(
+              "Proposal skill name must be non-empty and at most 120 characters.",
+              proposalId,
+            );
+          if (
+            next.operation === "create" &&
+            (next.targetSkillIds.length !== 0 ||
+              next.contentDiff.before !== null ||
+              next.contentDiff.after === null)
+          )
+            return yield* error(
+              "Create proposals need new content and cannot target an existing skill.",
+              proposalId,
+            );
+          if (next.operation !== "create" && next.targetSkillIds.length === 0)
+            return yield* error("This proposal operation requires a target skill.", proposalId);
+          if (
+            next.operation === "archive" &&
+            (next.contentDiff.before === null || next.contentDiff.after !== null)
+          )
+            return yield* error(
+              "Archive proposals need existing content and cannot include replacement content.",
+              proposalId,
+            );
+          if (
+            (next.operation === "update" || next.operation === "merge") &&
+            (next.contentDiff.before === null || next.contentDiff.after === null)
+          )
+            return yield* error(
+              "Update and merge proposals need both before and replacement content.",
+              proposalId,
+            );
+
+          const at = next.updatedAt;
+          const updated = yield* sql`
+          UPDATE harness_proposals
+          SET payload_json = ${encodeProposal(next)}, updated_at = ${at}
+          WHERE proposal_id = ${proposalId} AND status = 'pending' AND updated_at = ${expectedUpdatedAt}
+          RETURNING proposal_id
+        `.pipe(Effect.mapError(() => error("Could not revise Harness proposal.", proposalId)));
+          if (updated.length === 0)
+            return yield* error("Harness proposal changed while it was being revised.", proposalId);
+          const history = encodeProposalRevisionSnapshot({
+            before: {
+              skillName: current.skillName,
+              targetSkillIds: current.targetSkillIds,
+              evidence: current.evidence,
+              contentDiff: current.contentDiff,
+              confidence: current.confidence,
+              rationale: current.rationale,
+            },
+            after: {
+              skillName: next.skillName,
+              targetSkillIds: next.targetSkillIds,
+              evidence: next.evidence,
+              contentDiff: next.contentDiff,
+              confidence: next.confidence,
+              rationale: next.rationale,
+            },
+          });
+          yield* addAudit(next, "revised", history, at);
+          return next;
+        }),
+      )
+      .pipe(
+        Effect.mapError((cause) =>
+          isHarnessError(cause) ? cause : error("Could not revise Harness proposal.", proposalId),
+        ),
+      );
+    return publicProposal(yield* read(proposalId));
+  });
 
   const transition = (action: "approved" | "rejected", id: string, note?: string) =>
     sql
@@ -658,6 +809,7 @@ const make = Effect.gen(function* () {
 
   return HarnessProposalService.of({
     create,
+    revise,
     list,
     approve: Effect.fn("HarnessProposalService.approve")(function* (id, note) {
       return yield* transition("approved", id, note);

@@ -126,6 +126,23 @@ export const HarnessProposalCreateInput = Schema.Struct({
 });
 export type HarnessProposalCreateInput = typeof HarnessProposalCreateInput.Type;
 
+export const HarnessProposalEditPatch = Schema.Struct({
+  skillName: Schema.optional(Schema.String),
+  targetSkillIds: Schema.optional(Schema.Array(Schema.String)),
+  evidence: Schema.optional(Schema.Array(Schema.String)),
+  contentDiff: Schema.optional(HarnessContentDiff),
+  confidence: Schema.optional(Schema.Number),
+  rationale: Schema.optional(Schema.String),
+});
+export type HarnessProposalEditPatch = typeof HarnessProposalEditPatch.Type;
+
+export const HarnessProposalEditInput = Schema.Struct({
+  id: Schema.String,
+  expectedUpdatedAt: Schema.String,
+  patch: HarnessProposalEditPatch,
+});
+export type HarnessProposalEditInput = typeof HarnessProposalEditInput.Type;
+
 export const HarnessProposalListInput = Schema.Struct({
   scope: Schema.optional(HarnessProposalScope),
   status: Schema.optional(HarnessProposalStatus),
@@ -180,6 +197,7 @@ export const HarnessAuditEntry = Schema.Struct({
   proposalId: Schema.String,
   action: Schema.Literals([
     "created",
+    "revised",
     "approved",
     "rejected",
     "apply_started",

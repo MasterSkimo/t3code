@@ -123,6 +123,9 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
 import * as PlotlineDags from "./plotline/PlotlineDagService.ts";
 import * as HarnessProposals from "./harness/HarnessProposalService.ts";
+import * as HarnessHub from "./harness/HarnessHubService.ts";
+import * as HarnessScope from "./harness/HarnessScopeService.ts";
+import * as HarnessMcp from "./harness/HarnessMcpService.ts";
 import * as HarnessAnalysis from "./harness/HarnessAnalysisService.ts";
 import * as SecretRequests from "./secrets/SecretRequests.ts";
 import * as GuestShareService from "./guest/GuestShareService.ts";
@@ -1286,6 +1289,9 @@ export const layerWsRpc = (
       const scheduledTasks = yield* ScheduledTasks.ScheduledTaskService;
       const plotlineDags = yield* PlotlineDags.PlotlineDagService;
       const harnessProposals = yield* HarnessProposals.HarnessProposalService;
+      const harnessHub = yield* HarnessHub.HarnessHubService;
+      const harnessScope = yield* HarnessScope.HarnessScopeService;
+      const harnessMcp = yield* HarnessMcp.HarnessMcpService;
       const harnessAnalysis = yield* HarnessAnalysis.HarnessAnalysisService;
       const secretRequests = yield* SecretRequests.SecretRequests;
       const guestShares = yield* GuestShareService.GuestShareService;
@@ -2191,6 +2197,7 @@ export const layerWsRpc = (
         [WS_METHODS.plotlineDagsDelete]: (input) => plotlineDags.delete(input.id, input.confirm),
         [WS_METHODS.harnessProposalsList]: (input) => harnessProposals.list(input),
         [WS_METHODS.harnessProposalsCreate]: (input) => harnessProposals.create(input),
+        [WS_METHODS.harnessProposalsRevise]: (input) => harnessProposals.revise(input),
         [WS_METHODS.harnessProposalsApprove]: (input) =>
           harnessProposals.approve(input.id, input.note),
         [WS_METHODS.harnessProposalsReject]: (input) =>
@@ -2202,6 +2209,18 @@ export const layerWsRpc = (
         [WS_METHODS.harnessAuditList]: (input) =>
           harnessProposals.audit(input.proposalId).pipe(Effect.map((entries) => ({ entries }))),
         [WS_METHODS.harnessInventoryList]: (input) => harnessProposals.inventory(input.scope),
+        [WS_METHODS.harnessHubList]: (input) => harnessHub.list(input),
+        [WS_METHODS.harnessMcpDistributionPreview]: (input) => harnessMcp.preview(input),
+        [WS_METHODS.harnessMcpDistributionApply]: (input) => harnessMcp.apply(input),
+        [WS_METHODS.harnessMcpAdopt]: (input) => harnessMcp.adopt(input),
+        [WS_METHODS.harnessMcpUntrack]: (input) => harnessMcp.untrackDeployment(input.id),
+        [WS_METHODS.harnessMcpDeployments]: () =>
+          harnessMcp.listDeployments().pipe(Effect.map((deployments) => ({ deployments }))),
+        [WS_METHODS.harnessScopePreview]: (input) => harnessScope.preview(input),
+        [WS_METHODS.harnessScopeApply]: (input) => harnessScope.apply(input),
+        [WS_METHODS.harnessScopeHistory]: (input) =>
+          harnessScope.history(input).pipe(Effect.map((entries) => ({ entries }))),
+        [WS_METHODS.harnessScopeRollback]: (input) => harnessScope.rollback(input),
         [WS_METHODS.harnessAnalyze]: (input) =>
           harnessAnalysis.analyze({
             scope: input.scope,

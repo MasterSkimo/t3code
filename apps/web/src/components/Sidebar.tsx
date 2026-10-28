@@ -2702,6 +2702,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
             <SidebarThreadHeader
               searchFieldRef={headerSearchRef}
               onOpenDags={() => void router.navigate({ to: "/dags" })}
+              onOpenHarness={() => void router.navigate({ to: "/harness" })}
               hasProjects={projectGroups.length > 0}
               projectScope={
                 <Combobox
