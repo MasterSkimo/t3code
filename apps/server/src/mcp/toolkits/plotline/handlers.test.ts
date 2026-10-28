@@ -150,6 +150,17 @@ it.effect(
         id: dagId,
         tasks: [{ id: "prepare" }, { id: "upgrade" }],
       });
+      const edited = yield* call("plotline_dag_update_task", {
+        dagId,
+        taskId: "upgrade",
+        title: "Upgrade dependencies",
+      });
+      expect(edited.at(-1)?.result).toMatchObject({
+        tasks: [
+          { id: "prepare" },
+          { id: "upgrade", threadId: null, runId: null, agent: null },
+        ],
+      });
       const updated = yield* call("plotline_dag_update_task", {
         dagId,
         taskId: "prepare",

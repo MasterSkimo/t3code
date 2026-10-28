@@ -74,9 +74,13 @@ const layer = McpToolAccess.toLayer(PlotlineToolkit, {
       return yield* service
         .updateTask(projectId, {
           ...input,
-          threadId: context.scope.thread.threadId,
-          runId: context.caller?.activeRunId ?? null,
-          agent: context.scope.thread.providerInstanceId,
+          ...(input.state === "running"
+            ? {
+                threadId: context.scope.thread.threadId,
+                runId: context.caller?.activeRunId ?? null,
+                agent: context.scope.thread.providerInstanceId,
+              }
+            : {}),
         })
         .pipe(Effect.mapError(unavailable));
     }),
