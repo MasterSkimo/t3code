@@ -82,6 +82,8 @@ export function HarnessHubPage() {
   const [typeFilter, setTypeFilter] = useState("all");
   const [providerFilter, setProviderFilter] = useState("all");
   const [ownershipFilter, setOwnershipFilter] = useState("all");
+  const [resolutionFilter, setResolutionFilter] = useState("all");
+  const [compatibilityFilter, setCompatibilityFilter] = useState("all");
   const activeEnvironmentId =
     selectedEnvironment !== null &&
     environments.some((item) => item.environmentId === selectedEnvironment)
@@ -184,7 +186,9 @@ export function HarnessHubPage() {
         .includes(search.toLowerCase()) &&
       (typeFilter === "all" || item.type === typeFilter) &&
       (providerFilter === "all" || item.provider === providerFilter) &&
-      (ownershipFilter === "all" || item.ownership === ownershipFilter),
+      (ownershipFilter === "all" || item.ownership === ownershipFilter) &&
+      (resolutionFilter === "all" || item.resolution === resolutionFilter) &&
+      (compatibilityFilter === "all" || item.compatibility === compatibilityFilter),
   );
   const selectedSkill = scopeResources.find((item) => item.id === selectedSkillId) ?? null;
   const refresh = () => {
@@ -658,7 +662,7 @@ export function HarnessHubPage() {
                   onChange={(event) => setTypeFilter(event.target.value)}
                 >
                   <option value="all">Tous les types</option>
-                  {["skill", "rule", "agent", "hook", "mcp", "unknown"].map((type) => (
+                  {["skill", "rule", "agent", "command", "hook", "mcp", "config", "unknown"].map((type) => (
                     <option key={type} value={type}>
                       {type}
                     </option>
@@ -687,6 +691,28 @@ export function HarnessHubPage() {
                   <option value="managed">Harness</option>
                   <option value="user">Externe</option>
                   <option value="unknown">Inconnue</option>
+                </select>
+                <select
+                  aria-label="Résolution de la ressource"
+                  className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+                  value={resolutionFilter}
+                  onChange={(event) => setResolutionFilter(event.target.value)}
+                >
+                  <option value="all">Toutes les résolutions</option>
+                  <option value="unique">Unique</option>
+                  <option value="identical-copy">Copies identiques</option>
+                  <option value="collision-unresolved">Collision non résolue</option>
+                </select>
+                <select
+                  aria-label="Compatibilité"
+                  className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+                  value={compatibilityFilter}
+                  onChange={(event) => setCompatibilityFilter(event.target.value)}
+                >
+                  <option value="all">Toute compatibilité</option>
+                  <option value="native">Native</option>
+                  <option value="shared-convention">Convention partagée</option>
+                  <option value="unknown">Non déterminée</option>
                 </select>
               </div>
               {resourcesQuery.isPending ? (
@@ -726,6 +752,8 @@ export function HarnessHubPage() {
                             ? "Externe"
                             : "Propriété inconnue"}
                         {resource.provider ? ` · ${resource.provider}` : ""}
+                        {resource.resolution === "collision-unresolved" ? " · Collision" : ""}
+                        {resource.resolution === "identical-copy" ? " · Copie identique" : ""}
                       </span>
                     </button>
                   ))}
@@ -757,6 +785,30 @@ export function HarnessHubPage() {
                         <dd className="inline">{selectedSkill.provider}</dd>
                       </div>
                     ) : null}
+                    {selectedSkill.resolution ? (
+                      <div>
+                        <dt className="inline font-medium text-foreground">Résolution : </dt>
+                        <dd className="inline">{selectedSkill.resolution}</dd>
+                      </div>
+                    ) : null}
+                    {selectedSkill.fingerprint ? (
+                      <div>
+                        <dt className="inline font-medium text-foreground">Empreinte : </dt>
+                        <dd className="inline font-mono">{selectedSkill.fingerprint.slice(0, 16)}</dd>
+                      </div>
+                    ) : null}
+                    {selectedSkill.compatibility ? (
+                      <div>
+                        <dt className="inline font-medium text-foreground">Compatibilité : </dt>
+                        <dd className="inline">{selectedSkill.compatibility}</dd>
+                      </div>
+                    ) : null}
+                    {selectedSkill.relatedIds?.length ? (
+                      <div>
+                        <dt className="inline font-medium text-foreground">Autres définitions : </dt>
+                        <dd className="inline">{selectedSkill.relatedIds.length}</dd>
+                      </div>
+                    ) : null}
                     <div>
                       <dt className="inline font-medium text-foreground">État : </dt>
                       <dd className="inline">
@@ -771,7 +823,7 @@ export function HarnessHubPage() {
                       ? `Opérations prises en charge : ${selectedSkill.operations.join(", ")}`
                       : "Aucune opération de gestion prise en charge."}
                   </p>
-                  {selectedSkill.type === "skill" && projectId ? (
+                  {selectedSkill.type === "skill" && projectId && selectedSkill.scope !== "ancestor" ? (
                     <Button
                       className="mt-4"
                       size="sm"
@@ -784,7 +836,7 @@ export function HarnessHubPage() {
                         : "Promouvoir en global"}
                     </Button>
                   ) : null}
-                  {selectedSkill.type === "mcp" ? (
+                  {selectedSkill.type === "mcp" && selectedSkill.scope !== "ancestor" ? (
                     <div className="mt-5 space-y-3 border-t border-border pt-4">
                       <h4 className="text-sm font-medium">Distribuer cette configuration</h4>
                       <div className="flex flex-wrap gap-2">
