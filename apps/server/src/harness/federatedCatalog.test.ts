@@ -58,6 +58,9 @@ it("discovers provider skills, commands, rules and agents without exposing sourc
     NodeAssert.ok(entries.every((entry) => !entry.source.startsWith(project)));
     NodeAssert.ok(entries.some((entry) => entry.scope === "project" && entry.projectId === "p"));
     NodeAssert.ok(!entries.some((entry) => entry.name === "template"));
+    // The new adapter must not duplicate the legacy shared skill descriptor.
+    NodeAssert.equal(entries.filter((entry) => entry.type === "skill" &&
+      entry.scope === "project" && entry.name === "common").length, 1);
   }),
 );
 
