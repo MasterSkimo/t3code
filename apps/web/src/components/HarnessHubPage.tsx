@@ -823,7 +823,8 @@ export function HarnessHubPage() {
                       ? `Opérations prises en charge : ${selectedSkill.operations.join(", ")}`
                       : "Aucune opération de gestion prise en charge."}
                   </p>
-                  {selectedSkill.type === "skill" && projectId && selectedSkill.scope !== "ancestor" ? (
+                  {selectedSkill.type === "skill" && projectId && selectedSkill.scope !== "ancestor" &&
+                  (!selectedSkill.provider || selectedSkill.provider === "shared") ? (
                     <Button
                       className="mt-4"
                       size="sm"
