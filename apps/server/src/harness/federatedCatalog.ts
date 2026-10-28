@@ -174,7 +174,8 @@ async function walk(
     return;
   }
   for (const entry of entries) {
-    if (results.length >= MAX_RESOURCES || entry.isSymbolicLink()) break;
+    if (results.length >= MAX_RESOURCES) break;
+    if (entry.isSymbolicLink()) continue;
     const full = path.join(directory, entry.name);
     if (entry.isDirectory()) {
       await walk(root, full, type, results, depth + 1);
@@ -283,5 +284,5 @@ export async function discoverFederatedCatalog(
       relatedIds: others.map((other) => other.id),
     };
   }).sort((a, b) => a.scope.localeCompare(b.scope) || a.type.localeCompare(b.type)
-    || a.name.localeCompare(b.name) || a.provider!.localeCompare(b.provider ?? ""));
+    || a.name.localeCompare(b.name) || (a.provider ?? "").localeCompare(b.provider ?? ""));
 }
