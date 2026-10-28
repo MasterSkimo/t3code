@@ -490,6 +490,33 @@ export const makeStore = Effect.gen(function* () {
       }
       pendingSignals.delete(stored.sequence);
       yield* publish(newEvents);
+      // Surface persisted Loop Guard evidence in the existing read-only Plotline panel.
+      // Task ownership and orchestration state are untouched.
+      const interventions = newEvents.filter((signal) => signal.type === "loop_guard");
+      if (interventions.length > 0) {
+        const source = stored.event;
+        const runId = source.runId ??
+          (source.type === "turn-item.updated" ? source.payload.runId : undefined) ??
+          (source.type === "run-attempt.updated" ? source.payload.runId : undefined) ??
+          (source.type === "run.updated" ? source.payload.id : undefined);
+        if (runId) {
+          const dags = yield* plotline.list({}).pipe(Effect.orElseSucceed(() => ({ dags: [] })));
+          const matches = findPlotlineTaskRunMatches(dags.dags, source.threadId, runId);
+          for (const match of matches) {
+            const dag = dags.dags.find((entry) => entry.id === match.dagId);
+            if (!dag) continue;
+            for (const intervention of interventions) {
+              yield* plotline.addEvent(dag.projectId, {
+                dagId: match.dagId,
+                taskId: match.taskId,
+                message: intervention.summary,
+                level: intervention.summary.includes("resolved") ? "ok"
+                  : intervention.summary.includes("warning") ? "live" : "error",
+              }).pipe(Effect.catchAll(() => Effect.void));
+            }
+          }
+        }
+      }
     },
   );
   const runEventStream = Effect.suspend(() =>
