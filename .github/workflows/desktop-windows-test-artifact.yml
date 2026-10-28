@@ -1,0 +1,105 @@
+name: Desktop Windows test installer
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+# Keep the Windows test installer tied to the latest PR head only.
+concurrency:
+  group: desktop-windows-test-artifact-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  installer:
+    name: Build Windows x64 installer
+    runs-on: windows-2025
+    timeout-minutes: 100
+    steps:
+      # Match the Linux workflow's orphan-gitlink-safe checkout.
+      - name: Checkout PR commit
+        shell: bash
+        env:
+          CHECKOUT_REF: ${{ github.event.pull_request.head.sha }}
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "$CHECKOUT_REF"
+          git sparse-checkout set --no-cone '/*' '!/.repos/'
+          git -c checkout.workers=0 checkout --detach FETCH_HEAD
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: false
+
+      - name: Install desktop dependencies
+        run: vp install --filter=@t3tools/desktop... --filter=t3... --filter=@t3tools/scripts...
+
+      - name: Setup Rust MSVC
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+          targets: x86_64-pc-windows-msvc
+
+      - name: Configure public test defaults
+        shell: bash
+        run: cp .env.example .env
+
+      - name: Build Windows NSIS installer
+        env:
+          T3CODE_TELEMETRY_CHANNEL: dev
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: vp run dist:desktop:win:x64
+
+      - name: Validate and stage Windows installer
+        shell: pwsh
+        env:
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # The installer is unsigned; test on a disposable environment first.
+          $ErrorActionPreference = 'Stop'
+          $installers = @(Get-ChildItem -Path release -Filter '*.exe' -File)
+          if ($installers.Count -ne 1) {
+            throw "Expected one installer in release/, found $($installers.Count)"
+          }
+          $installer = $installers[0]
+          if ($installer.Length -lt 1000000) { throw "Installer is unexpectedly small" }
+          $stream = [System.IO.File]::OpenRead($installer.FullName)
+          try {
+            $magic = New-Object byte[] 2
+            [void]$stream.Read($magic, 0, 2)
+            if ($magic[0] -ne 77 -or $magic[1] -ne 90) {
+              throw "Expected MZ executable header"
+            }
+          } finally { $stream.Dispose() }
+          New-Item -ItemType Directory -Force -Path test-artifact | Out-Null
+          $short = $env:SOURCE_SHA.Substring(0, 12)
+          $name = "t3code-test-windows-x64-$short-setup.exe"
+          Copy-Item $installer.FullName "test-artifact/$name"
+          $hash = (Get-FileHash "test-artifact/$name" -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $name" | Out-File -FilePath "test-artifact/$name.sha256" -Encoding ascii
+          @(
+            "Source commit: $env:SOURCE_SHA"
+            "Architecture: Windows x64"
+            "Build command: vp run dist:desktop:win:x64"
+            "Validation: nonempty Windows MZ installer"
+            "Signing: unsigned test build"
+            "GUI execution: not validated"
+            "WSL backend runtime: not embedded in this test build"
+          ) | Set-Content test-artifact/BUILD_VALIDATION.txt
+
+      - name: Upload Windows x64 installer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: t3code-test-windows-x64-${{ github.event.pull_request.head.sha }}
+          path: test-artifact/*
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
