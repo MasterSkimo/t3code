@@ -25,7 +25,7 @@ it.effect(
                 skillName: "Review Helper",
                 targetSkillIds: ["new", "new"],
                 evidence: ["Repeated review checklist"],
-                sourceRefs: ["event:1", "unrelated"],
+                sourceRefs: ["event:1", "skill:known", "unrelated"],
                 contentDiff: { before: null, after: "---\nname: review-helper\n---\n" },
                 confidence: 2,
                 rationale: "The same review sequence appears repeatedly.",
@@ -55,13 +55,20 @@ it.effect(
         skills: [
           { id: "existing", title: "Review", description: "Review code", content: "Review" },
         ],
+        resources: [{
+          id: "skill:known", type: "skill", name: "External workflow",
+          provider: "opencode", scope: "global", resolution: "collision-unresolved",
+        }],
       });
       assert.strictEqual(result.engineId, "native-v1");
       assert.strictEqual(result.engineVersion, "1");
       assert.strictEqual(result.proposals[0]?.confidence, 1);
       assert.deepStrictEqual(result.proposals[0]?.targetSkillIds, ["new"]);
-      assert.deepStrictEqual(result.proposals[0]?.sourceRefs, ["event:1"]);
+      assert.deepStrictEqual(result.proposals[0]?.sourceRefs, ["event:1", "skill:known"]);
       assert.ok(prompt.includes("Private project context"));
       assert.ok(prompt.includes("Review code"));
+      assert.ok(prompt.includes("External workflow"));
+      assert.ok(prompt.includes("collision-unresolved"));
+      assert.ok(!prompt.includes("unrelated"));
     }),
 );
