@@ -131,8 +131,10 @@ function loopGuardStatus(dag: PlotlineDag, taskId: string): string {
   const latest = dag.events
     .filter((event) => event.taskId === taskId && event.message.startsWith("Loop Guard: "))
     .at(-1);
-  return /^Loop Guard: (warning|recovery|escalated|resolved)\\b/.exec(latest?.message ?? "")?.[1]
-    ?? "normal";
+  const state = latest?.message.split(" ")[2];
+  return state && ["warning", "recovery", "escalated", "resolved"].includes(state)
+    ? state
+    : "normal";
 }
 
 function EventText({ dag, event }: { dag: PlotlineDag; event: PlotlineDag["events"][number] }) {
