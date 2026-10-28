@@ -16,6 +16,7 @@ import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as PlotlineDagService from "../plotline/PlotlineDagService.ts";
 import { findPlotlineTaskRunMatches } from "./plotlineTaskTracking.ts";
 import { classifySuccessfulRun, isCorrectionPrompt } from "./signalQuality.ts";
+import { makeLoopGuardCollector } from "./loopGuard.ts";
 
 const UnknownJsonString = Schema.fromJsonString(Schema.Unknown);
 const decodeJson = Schema.decodeUnknownEffect(UnknownJsonString);
@@ -27,7 +28,8 @@ export type HarnessSignificantEventType =
   | "successful_output"
   | "validated_success"
   | "failure"
-  | "recovered_workflow";
+  | "recovered_workflow"
+  | "loop_guard";
 
 export interface HarnessSignificantEvent {
   readonly id: string;
@@ -201,6 +203,7 @@ export function makeSignificantEventCollector(): SignificantEventCollector {
     Array<{ id: string; runId: string; at: string; threadId: string }>
   >();
   const taskStates = new Map<string, { state: string; updatedAt: string }>();
+  const loopGuard = makeLoopGuardCollector();
   let plotlineDags: ReadonlyArray<PlotlineDag> = [];
 
   const add = (event: HarnessSignificantEvent): ReadonlyArray<HarnessSignificantEvent> => {
@@ -211,7 +214,7 @@ export function makeSignificantEventCollector(): SignificantEventCollector {
     return [event];
   };
 
-  const observe = (event: OrchestrationV2DomainEvent): ReadonlyArray<HarnessSignificantEvent> => {
+  const observeSignificant = (event: OrchestrationV2DomainEvent): ReadonlyArray<HarnessSignificantEvent> => {
     if (event.type === "message.updated") {
       const message = event.payload;
       if (message.workflowScript) return [];
@@ -386,6 +389,22 @@ export function makeSignificantEventCollector(): SignificantEventCollector {
     if (events.length > MAX_EVENTS) events.shift();
   };
   const seedId = (id: string) => seen.add(id);
+
+  const observe = (event: OrchestrationV2DomainEvent): ReadonlyArray<HarnessSignificantEvent> => {
+    const significant = observeSignificant(event);
+    const interventions = loopGuard.observe(event);
+    const emitted = interventions.flatMap((intervention) => add({
+      id: intervention.id,
+      at: intervention.at,
+      threadId: intervention.threadId,
+      type: "loop_guard",
+      // Persist only aggregate counts and event references: no raw tool input or secrets.
+      summary: `Loop Guard: ${intervention.state} (${intervention.reason}, ${intervention.observedCount}).`,
+      evidence: [intervention.recommendation],
+      sourceRefs: [...intervention.evidenceRefs],
+    }));
+    return [...significant, ...emitted];
+  };
 
   return { observe, observePlotlineDags, snapshot: () => [...events], seed, seedId };
 }
