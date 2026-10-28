@@ -21,6 +21,7 @@ import * as HarnessProposalService from "./HarnessProposalService.ts";
 import * as HarnessSkillsService from "./HarnessSkillsService.ts";
 import * as HarnessSignificantEvents from "./events.ts";
 import * as HarnessEngine from "./engine.ts";
+import { discoverFederatedCatalog } from "./federatedCatalog.ts";
 
 export interface HarnessAnalysisServiceShape {
   readonly analyze: (input: {
@@ -106,6 +107,15 @@ export const makeHarnessAnalysisService = Effect.gen(function* () {
     if (!budget.allowed || !budget.shouldRun) return { proposals: [] };
 
     const allSkills = yield* skillService.discover(scope);
+    // Federated discovery remains metadata-only. Never send external instruction bodies to inference.
+    const catalog = yield* Effect.tryPromise({
+      try: () => discoverFederatedCatalog({
+        workspaceRoot: cwd,
+        homeDirectory: home,
+        ...(scope.kind === "project" ? { projectId: scope.projectId } : {}),
+      }),
+      catch: () => new HarnessError({ message: "Federated resource discovery failed." }),
+    });
     const serverSettings = yield* settings.getSettings.pipe(
       Effect.mapError(() => new HarnessError({ message: "Could not read provider settings." })),
     );
@@ -117,6 +127,15 @@ export const makeHarnessAnalysisService = Effect.gen(function* () {
         modelSelection: selectedModel,
         context: `${scope.kind === "global" ? "User-wide skill analysis." : "Project skill analysis."}\n${redactSensitive(userContext)?.slice(0, 4_000) ?? ""}`,
         events: scopedEvents,
+        resources: catalog.filter((item) => scope.kind === "project" || item.scope === "global")
+          .map((item) => ({
+            id: item.id,
+            type: item.type,
+            name: item.name,
+            ...(item.provider ? { provider: item.provider } : {}),
+            scope: item.scope,
+            resolution: item.resolution,
+          })),
         skills: allSkills.map((skill) => ({
           id: skill.id,
           title: skill.name,
