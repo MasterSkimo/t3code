@@ -1488,6 +1488,7 @@ export function PullRequestsPage() {
             onAddFiles={() => undefined}
             onAddPullRequest={() => undefined}
             onAddPullRequests={() => undefined}
+            onAddPlotline={() => undefined}
             onAddDevice={() => undefined}
             browserAvailable={false}
             terminalAvailable={false}
@@ -1495,6 +1496,8 @@ export function PullRequestsPage() {
             filesAvailable={false}
             pullRequestAvailable={false}
             pullRequestsAvailable={false}
+            plotlineAvailable={false}
+            plotlineState={null}
             deviceAvailable={false}
             pullRequestStatusSeeds={listedPullRequestTabStatuses}
           >
