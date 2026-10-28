@@ -140,7 +140,8 @@ export const makeHarnessAnalysisService = Effect.gen(function* () {
           id: skill.id,
           title: skill.name,
           description: redactSensitive(skill.description ?? "") ?? "",
-          content: safeSkillContent(skill.content),
+          // External skill bodies remain private until a separate consent mechanism is enabled.
+          content: skill.managed ? safeSkillContent(skill.content) : "",
         })),
       })
       .pipe(
