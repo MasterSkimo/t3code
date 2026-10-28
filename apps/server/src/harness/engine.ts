@@ -31,12 +31,23 @@ export interface HarnessAnalysisSkill {
   readonly content: string;
 }
 
+/** Metadata only: discovered content is not passed to a model. */
+export interface HarnessAnalysisResource {
+  readonly id: string;
+  readonly type: string;
+  readonly name: string;
+  readonly provider?: string;
+  readonly scope: string;
+  readonly resolution: string;
+}
+
 export interface HarnessAnalysisInput {
   readonly cwd: string;
   readonly modelSelection: ModelSelection;
   readonly context: string;
   readonly events: ReadonlyArray<HarnessAnalysisEvent>;
   readonly skills: ReadonlyArray<HarnessAnalysisSkill>;
+  readonly resources?: ReadonlyArray<HarnessAnalysisResource>;
 }
 
 export interface HarnessAnalysisProposal {
@@ -78,6 +89,7 @@ const ProposalSchema = Schema.Struct({
 const NativeAnalysisSchema = Schema.Struct({ proposals: Schema.Array(ProposalSchema) });
 
 const MAX_EVENTS = 40;
+const MAX_RESOURCES = 100;
 const MAX_SKILLS = 100;
 const MAX_EVENT_TEXT = 1_200;
 const MAX_SKILL_CONTENT = 8_000;
@@ -87,7 +99,7 @@ const MAX_PROPOSALS = 12;
 const bounded = (value: string, length: number) => value.slice(0, length);
 
 const analysisPrompt = (input: HarnessAnalysisInput) =>
-  `Analyze the supplied redacted project activity and existing skills. Suggest only durable, reusable skill changes supported by evidence. Compare existing skills first: prefer updates when appropriate, identify conflicts and duplicates, and avoid speculative proposals. Never infer secrets or include paths, credentials, personal data, or raw source excerpts. Return at most ${MAX_PROPOSALS} proposals. Confidence must be from 0 to 1. For create, contentDiff.before must be null and after must contain the full proposed skill content. For update or merge, before must be the current relevant content and after the complete replacement content. For archive, before must contain the current skill content and after must be null. Use sourceRefs exactly as provided by the input; evidence should be concise grounded observations. If nothing is sufficiently supported, return an empty proposals array.\n\nContext:\n${bounded(input.context, MAX_CONTEXT)}\n\nEvents:\n${JSON.stringify(
+  `Analyze the supplied redacted project activity and existing skills. Suggest only durable, reusable skill changes supported by evidence. Compare existing skills first: prefer updates when appropriate, identify conflicts and duplicates, and avoid speculative proposals. Never infer secrets or include paths, credentials, personal data, or raw source excerpts. Return at most ${MAX_PROPOSALS} proposals. Confidence must be from 0 to 1. For create, contentDiff.before must be null and after must contain the full proposed skill content. For update or merge, before must be the current relevant content and after the complete replacement content. For archive, before must contain the current skill content and after must be null. Use sourceRefs only from the supplied events or discovered resource IDs; evidence should be concise grounded observations. If nothing is sufficiently supported, return an empty proposals array.\n\nContext:\n${bounded(input.context, MAX_CONTEXT)}\n\nEvents:\n${JSON.stringify(
     input.events.slice(-MAX_EVENTS).map((event) => ({
       id: event.id,
       at: event.at,
@@ -104,6 +116,12 @@ const analysisPrompt = (input: HarnessAnalysisInput) =>
       title: bounded(skill.title, 200),
       description: bounded(skill.description, 1_000),
       content: bounded(skill.content, MAX_SKILL_CONTENT),
+    })),
+  )}\n\nDiscovered resources (metadata only, no automatic external content analysis):\n${JSON.stringify(
+    (input.resources ?? []).slice(0, MAX_RESOURCES).map((item) => ({
+      id: bounded(item.id, 100), type: bounded(item.type, 40),
+      name: bounded(item.name, 120), provider: bounded(item.provider ?? "unknown", 40),
+      scope: bounded(item.scope, 40), resolution: bounded(item.resolution, 40),
     })),
   )}`;
 
@@ -144,7 +162,8 @@ export const makeHarnessEngine = Effect.gen(function* () {
           targetSkillIds: [...new Set(proposal.targetSkillIds)],
           evidence: [...new Set(proposal.evidence)],
           sourceRefs: [...new Set(proposal.sourceRefs)].filter((ref) =>
-            input.events.some((event) => event.sourceRefs.includes(ref)),
+            input.events.some((event) => event.sourceRefs.includes(ref)) ||
+            (input.resources ?? []).some((resource) => resource.id === ref),
           ),
         })),
       } satisfies HarnessAnalysisResult;
