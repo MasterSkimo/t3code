@@ -126,6 +126,15 @@ function dateText(iso: string) {
     : date.toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "medium" });
 }
 
+/** Plotline remains read-only: guard labels derive from persisted DAG evidence. */
+function loopGuardStatus(dag: PlotlineDag, taskId: string): string {
+  const latest = dag.events
+    .filter((event) => event.taskId === taskId && event.message.startsWith("Loop Guard: "))
+    .at(-1);
+  return /^Loop Guard: (warning|recovery|escalated|resolved)\\b/.exec(latest?.message ?? "")?.[1]
+    ?? "normal";
+}
+
 function EventText({ dag, event }: { dag: PlotlineDag; event: PlotlineDag["events"][number] }) {
   const title = dag.tasks.find((task) => task.id === event.taskId)?.title;
   const label = title ?? (event.message.startsWith("Run ") ? null : "Run");
@@ -364,6 +373,7 @@ export function PlotlineViewer({ dag, onOpenThread, maximized = false }: Plotlin
               {viewDag.tasks.map((task) => {
                 const position = positions.get(task.id);
                 if (!position) return null;
+                const guard = loopGuardStatus(viewDag, task.id);
                 return (
                   <button
                     key={task.id}
@@ -391,7 +401,9 @@ export function PlotlineViewer({ dag, onOpenThread, maximized = false }: Plotlin
                           <em className="plotline-unavailable">agent indisponible</em>
                         )}
                       </span>
-                      <span className="plotline-unavailable">métriques indisponibles</span>
+                      <span className="plotline-unavailable">
+                        {guard === "normal" ? "métriques indisponibles" : `Loop Guard · ${guard}`}
+                      </span>
                     </div>
                   </button>
                 );
@@ -463,6 +475,7 @@ export function PlotlineViewer({ dag, onOpenThread, maximized = false }: Plotlin
                 </div>
                 <div className="plotline-inspect-grid">
                   <InspectCell label="État">{TASK_LABELS[selectedTask.state]}</InspectCell>
+                   <InspectCell label="Loop Guard">{loopGuardStatus(viewDag, selectedTask.id)}</InspectCell>
                   <InspectCell label="Effort estimé">{selectedTask.effort} / 5</InspectCell>
                   <InspectCell label="Agent / modèle">
                     {selectedTask.agent || <em>non renseigné</em>}
