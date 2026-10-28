@@ -18,7 +18,8 @@ export interface HarnessAnalysisEvent {
     | "successful_output"
     | "validated_success"
     | "failure"
-    | "recovered_workflow";
+    | "recovered_workflow"
+    | "loop_guard";
   readonly summary: string;
   readonly evidence: ReadonlyArray<string>;
   readonly sourceRefs: ReadonlyArray<string>;
