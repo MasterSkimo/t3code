@@ -260,6 +260,24 @@ export async function discoverFederatedCatalog(
   }
   const unique = new Map<string, FederatedResource>();
   for (const item of resources) {
+    // Preserve existing .agents skill identifiers: Hub scope operations use these ids.
+    const existingSharedSkill = item.provider === "shared" && item.type === "skill"
+      ? [...unique.values()].find((candidate) =>
+          candidate.provider === undefined && candidate.type === "skill" &&
+          candidate.scope === item.scope && candidate.projectId === item.projectId &&
+          candidate.name === item.name &&
+          /(?:^|\\/)\\.agents\\/skills$/.test(candidate.source.replaceAll("\\\\", "/")))
+      : undefined;
+    if (existingSharedSkill) {
+      unique.set(existingSharedSkill.id, {
+        ...existingSharedSkill,
+        provider: "shared",
+        fingerprint: item.fingerprint,
+        compatibility: "shared-convention",
+        consumers: [],
+      });
+      continue;
+    }
     const previous = unique.get(item.id);
     unique.set(item.id, previous
       ? { ...item, ownership: previous.ownership === "managed" ? "managed" : item.ownership }
