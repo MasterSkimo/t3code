@@ -266,7 +266,7 @@ export async function discoverFederatedCatalog(
           candidate.provider === undefined && candidate.type === "skill" &&
           candidate.scope === item.scope && candidate.projectId === item.projectId &&
           candidate.name === item.name &&
-          /(?:^|\\/)\\.agents\\/skills$/.test(candidate.source.replaceAll("\\\\", "/")))
+          candidate.source.endsWith(".agents/skills"))
       : undefined;
     if (existingSharedSkill) {
       unique.set(existingSharedSkill.id, {
