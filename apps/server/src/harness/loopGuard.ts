@@ -128,7 +128,8 @@ export function makeLoopGuardCollector(
     const runId = event.runId ??
       ((event.type === "run.updated" || event.type === "run.created")
         ? event.payload.id : undefined);
-    const key = `${event.threadId}:${runId ?? "unknown"}`;
+    const itemRunId = event.type === "turn-item.updated" ? event.payload.runId : undefined;
+    const key = `${event.threadId}:${runId ?? itemRunId ?? "unknown"}`;
     if (event.type === "checkpoint.captured" && event.payload.status === "ready") {
       return reset(event, key);
     }
