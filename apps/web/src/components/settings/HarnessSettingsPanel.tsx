@@ -3,11 +3,11 @@ import {
   type HarnessAuditEntry,
   type HarnessDefaults,
   type HarnessProposal,
-  type HarnessSkillUsageMetricsAvailability,
-  type HarnessSkillSummary,
+  type HarnessProposalOutcome,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { useState, type FormEvent } from "react";
+import { DownloadIcon } from "lucide-react";
 import { SettingsRow, SettingsSection } from "./settingsLayout";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
@@ -29,8 +29,6 @@ export interface HarnessSettingsPanelProps {
   readonly defaults: HarnessDefaults;
   readonly proposals: readonly HarnessProposal[];
   readonly audit: readonly HarnessAuditEntry[];
-  readonly inventory: readonly HarnessSkillSummary[];
-  readonly usageMetrics: HarnessSkillUsageMetricsAvailability;
   readonly metrics: HarnessMetrics;
   readonly busy?: boolean;
   readonly notice?: string | null;
@@ -38,8 +36,11 @@ export interface HarnessSettingsPanelProps {
   readonly onLearn?: (context: string) => void | Promise<void>;
   readonly onApprove: (id: string) => void | Promise<void>;
   readonly onReject: (id: string) => void | Promise<void>;
-  readonly onApply: (id: string) => void | Promise<void>;
   readonly onRollback: (id: string) => void | Promise<void>;
+  readonly onExport: (proposal: HarnessProposal) => Promise<{ filename: string; content: string }>;
+  readonly onMarkImplemented: (id: string) => void | Promise<void>;
+  readonly outcomes: Readonly<Record<string, HarnessProposalOutcome>>;
+  readonly onEvaluate: (id: string) => void | Promise<void>;
 }
 
 function dateLabel(value: string | null | undefined): string {
@@ -48,20 +49,35 @@ function dateLabel(value: string | null | undefined): string {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
+export function exportProposal(filename: string, content: string) {
+  const url = URL.createObjectURL(new Blob([content], { type: "text/markdown;charset=utf-8" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 function ProposalCard({
   proposal,
   busy,
   onApprove,
   onReject,
-  onApply,
   onRollback,
+  onExport,
+  onMarkImplemented,
+  outcome,
+  onEvaluate,
 }: {
   proposal: HarnessProposal;
   busy: boolean;
   onApprove: () => void;
   onReject: () => void;
-  onApply: () => void;
   onRollback: () => void;
+  onExport: () => void;
+  onMarkImplemented: () => void;
+  outcome: HarnessProposalOutcome | undefined;
+  onEvaluate: () => void;
 }) {
   const scope = proposal.scope.kind === "global" ? "Global" : `Project ${proposal.scope.projectId}`;
   return (
@@ -78,6 +94,23 @@ function ProposalCard({
             <span className="text-2xs text-muted-foreground">{scope}</span>
           </div>
           <p className="mt-1 text-xs text-muted-foreground">{proposal.rationale}</p>
+          {proposal.target && (
+            <div className="mt-2 rounded-md bg-muted/40 p-2 text-xs">
+              <p>
+                <span className="font-medium">Target:</span> {proposal.target.resourceType} ·{" "}
+                {proposal.target.expectedModification}
+              </p>
+              {proposal.target.resourceId && (
+                <p className="mt-1 text-muted-foreground">Resource: {proposal.target.resourceId}</p>
+              )}
+              <p className="mt-1 font-medium">Validation criteria</p>
+              <ul className="list-disc pl-4 text-muted-foreground">
+                {proposal.target.validationCriteria.map((criterion) => (
+                  <li key={criterion}>{criterion}</li>
+                ))}
+              </ul>
+            </div>
+          )}
           <p className="mt-1 text-2xs text-muted-foreground">
             {proposal.engineId} · {proposal.engineVersion} · {Math.round(proposal.confidence * 100)}
             % confidence · {dateLabel(proposal.createdAt)}
@@ -93,15 +126,54 @@ function ProposalCard({
             </Button>
           </div>
         ) : proposal.status === "approved" ? (
-          <Button size="xs" disabled={busy} onClick={onApply}>
-            Apply
-          </Button>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted-foreground">
+              {proposal.externallyImplementedAt
+                ? `Marked implemented ${dateLabel(proposal.externallyImplementedAt)}`
+                : "Approved"}
+            </span>
+            <Button size="xs" variant="outline" onClick={onExport}>
+              <DownloadIcon className="mr-1 size-3" /> Export
+            </Button>
+            {!proposal.externallyImplementedAt && (
+              <Button size="xs" disabled={busy} onClick={onMarkImplemented}>
+                Mark implemented
+              </Button>
+            )}
+          </div>
         ) : proposal.status === "applied" ? (
           <Button size="xs" variant="outline" disabled={busy} onClick={onRollback}>
             Rollback
           </Button>
         ) : null}
       </div>
+      {(proposal.status === "applied" || proposal.externallyImplementedAt) && (
+        <div className="mt-2 rounded-md border border-border/50 p-2 text-xs">
+          <div className="flex items-center justify-between gap-2">
+            <span className="font-medium">Observed outcomes</span>
+            <Button size="xs" variant="outline" disabled={busy} onClick={onEvaluate}>
+              Evaluate
+            </Button>
+          </div>
+          {outcome && (
+            <>
+              <p className="mt-1 text-muted-foreground">
+                Since {dateLabel(outcome.availableSince)}
+              </p>
+              <p className="mt-1 text-muted-foreground">{outcome.note}</p>
+              <p className="mt-1">
+                Completed events: {outcome.observedCompletedEvents ?? "Unavailable"} · Failed
+                events: {outcome.observedFailedEvents ?? "Unavailable"}
+              </p>
+              {outcome.unavailableMetrics.map((metric) => (
+                <p key={metric} className="mt-1 text-muted-foreground">
+                  Unavailable: {metric}
+                </p>
+              ))}
+            </>
+          )}
+        </div>
+      )}
       {proposal.targetSkillIds.length > 0 && (
         <p className="mt-2 text-2xs text-muted-foreground">
           Skills: {proposal.targetSkillIds.join(", ")}
@@ -145,8 +217,6 @@ export function HarnessSettingsPanel({
   defaults,
   proposals,
   audit,
-  inventory,
-  usageMetrics,
   metrics,
   busy = false,
   notice,
@@ -154,8 +224,11 @@ export function HarnessSettingsPanel({
   onLearn,
   onApprove,
   onReject,
-  onApply,
   onRollback,
+  onExport,
+  onMarkImplemented,
+  outcomes,
+  onEvaluate,
 }: HarnessSettingsPanelProps) {
   const [enabled, setEnabled] = useState(defaults.enabled);
   const [autoLearn, setAutoLearn] = useState(defaults.autoLearn);
@@ -357,44 +430,16 @@ export function HarnessSettingsPanel({
                 busy={busy}
                 onApprove={() => void onApprove(proposal.id)}
                 onReject={() => void onReject(proposal.id)}
-                onApply={() => void onApply(proposal.id)}
                 onRollback={() => void onRollback(proposal.id)}
+                onExport={() =>
+                  void onExport(proposal).then(({ filename, content }) =>
+                    exportProposal(filename, content),
+                  )
+                }
+                onMarkImplemented={() => void onMarkImplemented(proposal.id)}
+                outcome={outcomes[proposal.id]}
+                onEvaluate={() => void onEvaluate(proposal.id)}
               />
-            ))
-          )}
-        </div>
-      </SettingsSection>
-
-      <SettingsSection id="harness-inventory" title={`Skill inventory (${inventory.length})`}>
-        {usageMetrics.status === "unavailable" &&
-        usageMetrics.reason === "skill-usage-not-attributed" ? (
-          <p className="px-4 py-2 text-xs text-muted-foreground">
-            Skill usage metrics unavailable: T3 Code does not attribute agent activity to individual
-            skills.
-          </p>
-        ) : null}
-        <div className="divide-y divide-border/50">
-          {inventory.length === 0 ? (
-            <p className="px-4 py-3 text-sm text-muted-foreground">
-              No learned skills are available.
-            </p>
-          ) : (
-            inventory.map((item) => (
-              <div
-                key={item.id}
-                className="flex flex-wrap items-start justify-between gap-2 px-4 py-3"
-              >
-                <div>
-                  <p className="text-sm font-medium">{item.name}</p>
-                  {item.description && (
-                    <p className="mt-0.5 text-xs text-muted-foreground">{item.description}</p>
-                  )}
-                  <div className="flex gap-2 text-2xs text-muted-foreground">
-                    <span className="capitalize">{item.scope}</span>
-                    <span>{item.managed ? "Harness managed" : "User managed"}</span>
-                  </div>
-                </div>
-              </div>
             ))
           )}
         </div>

@@ -9,6 +9,8 @@ import {
   HarnessProposalEditInput,
   HarnessProposalListInput,
   HarnessProposalListResult,
+  HarnessProposalExport,
+  HarnessProposalTarget,
   type HarnessProposalEditPatch,
   type HarnessProposal as Proposal,
   type HarnessSkillReceipt,
@@ -20,7 +22,6 @@ import * as Crypto from "effect/Crypto";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
-import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -41,6 +42,7 @@ const ProposalRevisionSnapshot = Schema.Struct({
     contentDiff: HarnessContentDiff,
     confidence: Schema.Number,
     rationale: Schema.String,
+    target: Schema.optional(HarnessProposalTarget),
   }),
   after: Schema.Struct({
     skillName: Schema.String,
@@ -49,6 +51,7 @@ const ProposalRevisionSnapshot = Schema.Struct({
     contentDiff: HarnessContentDiff,
     confidence: Schema.Number,
     rationale: Schema.String,
+    target: Schema.optional(HarnessProposalTarget),
   }),
 });
 const encodeProposalRevisionSnapshot = Schema.encodeSync(
@@ -71,6 +74,8 @@ export class HarnessProposalService extends Context.Service<
     readonly approve: (id: string, note?: string) => Effect.Effect<Proposal, HarnessError>;
     readonly reject: (id: string, note?: string) => Effect.Effect<Proposal, HarnessError>;
     readonly apply: (id: string) => Effect.Effect<Proposal, HarnessError>;
+    readonly markImplementedExternally: (id: string) => Effect.Effect<Proposal, HarnessError>;
+    readonly export: (id: string) => Effect.Effect<HarnessProposalExport, HarnessError>;
     readonly rollback: (id: string) => Effect.Effect<Proposal, HarnessError>;
     readonly recoverInterrupted: () => Effect.Effect<void, HarnessError>;
     readonly audit: (proposalId?: string) => Effect.Effect<ReadonlyArray<AuditEntry>, HarnessError>;
@@ -113,8 +118,6 @@ const make = Effect.gen(function* () {
   const error = (message: string, proposalId?: string) =>
     new HarnessError({ message, ...(proposalId === undefined ? {} : { proposalId }) });
   const toSkillReceipt = (receipt: HarnessSkillReceipt) => receipt as unknown as SkillChangeReceipt;
-  const toContractReceipt = (receipt: SkillChangeReceipt) =>
-    receipt as unknown as HarnessSkillReceipt;
   const publicProposal = (proposal: Proposal): Proposal => ({ ...proposal, appliedReceipt: null });
 
   const read = Effect.fn("HarnessProposalService.read")(function* (proposalId: string) {
@@ -140,6 +143,7 @@ const make = Effect.gen(function* () {
       | "apply_started"
       | "apply_recovered"
       | "applied"
+      | "implemented_externally"
       | "rollback_started"
       | "rolled_back",
     note: string | null,
@@ -157,33 +161,50 @@ const make = Effect.gen(function* () {
   )(function* (input) {
     if (!Number.isFinite(input.confidence) || input.confidence < 0 || input.confidence > 1)
       return yield* error("Proposal confidence must be between 0 and 1.");
+    if (
+      input.target &&
+      (input.target.operation !== input.operation ||
+        scopeKey(input.target.scope) !== scopeKey(input.scope) ||
+        !input.target.expectedModification.trim() ||
+        input.target.validationCriteria.length === 0 ||
+        input.target.validationCriteria.some((criterion) => !criterion.trim()))
+    )
+      return yield* error(
+        "Proposal target metadata must match its scope and operation and include validation criteria.",
+      );
     const targetIds = new Set(input.targetSkillIds);
     if (
       targetIds.size !== input.targetSkillIds.length ||
       input.targetSkillIds.some((value) => !value.trim())
     )
       return yield* error("Proposal target skill ids must be unique and non-empty.");
-    if (
-      input.operation === "create" &&
-      (input.targetSkillIds.length !== 0 ||
-        input.contentDiff.before !== null ||
-        input.contentDiff.after === null)
-    )
-      return yield* error("Create proposals need new content and cannot target an existing skill.");
-    if (input.operation !== "create" && input.targetSkillIds.length === 0)
-      return yield* error("This proposal operation requires a target skill.");
-    if (
-      input.operation === "archive" &&
-      (input.contentDiff.before === null || input.contentDiff.after !== null)
-    )
-      return yield* error(
-        "Archive proposals need the existing content and cannot include replacement content.",
-      );
-    if (
-      (input.operation === "update" || input.operation === "merge") &&
-      (input.contentDiff.before === null || input.contentDiff.after === null)
-    )
-      return yield* error("Update and merge proposals need both before and replacement content.");
+    if (!input.target || input.target.resourceType === "skill") {
+      if (
+        input.operation === "create" &&
+        (input.targetSkillIds.length !== 0 ||
+          input.contentDiff.before !== null ||
+          input.contentDiff.after === null)
+      )
+        return yield* error(
+          "Create proposals need new content and cannot target an existing skill.",
+        );
+      if (input.operation !== "create" && input.targetSkillIds.length === 0)
+        return yield* error("This proposal operation requires a target skill.");
+      if (
+        input.operation === "archive" &&
+        (input.contentDiff.before === null || input.contentDiff.after !== null)
+      )
+        return yield* error(
+          "Archive proposals need the existing content and cannot include replacement content.",
+        );
+      if (
+        (input.operation === "update" || input.operation === "merge") &&
+        (input.contentDiff.before === null || input.contentDiff.after === null)
+      )
+        return yield* error("Update and merge proposals need both before and replacement content.");
+    } else if (!input.target.expectedModification.trim()) {
+      return yield* error("Recommendation proposals need an expected modification.");
+    }
     if (!input.skillName.trim() || input.skillName.length > 120)
       return yield* error("Proposal skill name must be non-empty and at most 120 characters.");
     const createdAt = yield* now();
@@ -213,6 +234,8 @@ const make = Effect.gen(function* () {
       decisionNote: null,
       appliedAt: null,
       appliedReceipt: null,
+      externallyImplementedAt: null,
+      applicationMode: "staged",
     };
     const payload = encodeProposal(proposal);
     yield* sql
@@ -300,11 +323,24 @@ const make = Effect.gen(function* () {
             contentDiff: edits.contentDiff ?? current.contentDiff,
             confidence: edits.confidence ?? current.confidence,
             rationale: edits.rationale ?? current.rationale,
+            target: edits.target ?? current.target,
             updatedAt,
           };
           const targetIds = new Set(next.targetSkillIds);
           if (!Number.isFinite(next.confidence) || next.confidence < 0 || next.confidence > 1)
             return yield* error("Proposal confidence must be between 0 and 1.", proposalId);
+          if (
+            next.target &&
+            (next.target.operation !== next.operation ||
+              scopeKey(next.target.scope) !== scopeKey(next.scope) ||
+              !next.target.expectedModification.trim() ||
+              next.target.validationCriteria.length === 0 ||
+              next.target.validationCriteria.some((criterion) => !criterion.trim()))
+          )
+            return yield* error(
+              "Proposal target metadata must match its scope and operation and include validation criteria.",
+              proposalId,
+            );
           if (
             targetIds.size !== next.targetSkillIds.length ||
             next.targetSkillIds.some((value) => !value.trim())
@@ -318,34 +354,41 @@ const make = Effect.gen(function* () {
               "Proposal skill name must be non-empty and at most 120 characters.",
               proposalId,
             );
-          if (
-            next.operation === "create" &&
-            (next.targetSkillIds.length !== 0 ||
-              next.contentDiff.before !== null ||
-              next.contentDiff.after === null)
-          )
+          if (!next.target || next.target.resourceType === "skill") {
+            if (
+              next.operation === "create" &&
+              (next.targetSkillIds.length !== 0 ||
+                next.contentDiff.before !== null ||
+                next.contentDiff.after === null)
+            )
+              return yield* error(
+                "Create proposals need new content and cannot target an existing skill.",
+                proposalId,
+              );
+            if (next.operation !== "create" && next.targetSkillIds.length === 0)
+              return yield* error("This proposal operation requires a target skill.", proposalId);
+            if (
+              next.operation === "archive" &&
+              (next.contentDiff.before === null || next.contentDiff.after !== null)
+            )
+              return yield* error(
+                "Archive proposals need existing content and cannot include replacement content.",
+                proposalId,
+              );
+            if (
+              (next.operation === "update" || next.operation === "merge") &&
+              (next.contentDiff.before === null || next.contentDiff.after === null)
+            )
+              return yield* error(
+                "Update and merge proposals need both before and replacement content.",
+                proposalId,
+              );
+          } else if (!next.target.expectedModification.trim()) {
             return yield* error(
-              "Create proposals need new content and cannot target an existing skill.",
+              "Recommendation proposals need an expected modification.",
               proposalId,
             );
-          if (next.operation !== "create" && next.targetSkillIds.length === 0)
-            return yield* error("This proposal operation requires a target skill.", proposalId);
-          if (
-            next.operation === "archive" &&
-            (next.contentDiff.before === null || next.contentDiff.after !== null)
-          )
-            return yield* error(
-              "Archive proposals need existing content and cannot include replacement content.",
-              proposalId,
-            );
-          if (
-            (next.operation === "update" || next.operation === "merge") &&
-            (next.contentDiff.before === null || next.contentDiff.after === null)
-          )
-            return yield* error(
-              "Update and merge proposals need both before and replacement content.",
-              proposalId,
-            );
+          }
 
           const at = next.updatedAt;
           const updated = yield* sql`
@@ -364,6 +407,7 @@ const make = Effect.gen(function* () {
               contentDiff: current.contentDiff,
               confidence: current.confidence,
               rationale: current.rationale,
+              ...(current.target ? { target: current.target } : {}),
             },
             after: {
               skillName: next.skillName,
@@ -372,6 +416,7 @@ const make = Effect.gen(function* () {
               contentDiff: next.contentDiff,
               confidence: next.confidence,
               rationale: next.rationale,
+              ...(next.target ? { target: next.target } : {}),
             },
           });
           yield* addAudit(next, "revised", history, at);
@@ -450,57 +495,39 @@ const make = Effect.gen(function* () {
   const apply: HarnessProposalService["Service"]["apply"] = Effect.fn(
     "HarnessProposalService.apply",
   )(function* (proposalId) {
-    const proposal = yield* read(proposalId);
-    if (proposal.status !== "approved")
-      return yield* error("Only approved proposals can be applied.", proposalId);
-    const startingAt = yield* now();
-    const applying: Proposal = { ...proposal, status: "applying", updatedAt: startingAt };
-    yield* sql
-      .withTransaction(
-        Effect.gen(function* () {
-          const changed =
-            yield* sql`UPDATE harness_proposals SET status = 'applying', payload_json = ${encodeProposal(applying)}, updated_at = ${startingAt} WHERE proposal_id = ${proposalId} AND status = 'approved' RETURNING proposal_id`.pipe(
-              Effect.mapError(() =>
-                error("Could not start Harness skill application.", proposalId),
-              ),
-            );
-          if (changed.length === 0)
-            return yield* error("Harness proposal changed while it was being applied.", proposalId);
-          yield* addAudit(applying, "apply_started", null, startingAt);
-        }),
-      )
-      .pipe(
-        Effect.mapError((cause) =>
-          isHarnessError(cause)
-            ? cause
-            : error("Could not start Harness skill application.", proposalId),
-        ),
-      );
-    const receipt = yield* skills.apply({ ...proposal, status: "approved" });
-    const at = yield* now();
-    const next: Proposal = {
-      ...proposal,
-      status: "applied",
-      appliedAt: at,
-      appliedReceipt: toContractReceipt(receipt),
-      updatedAt: at,
-    };
-    const persisted = yield* Effect.exit(
-      sql
+    yield* read(proposalId);
+    return yield* error(
+      "Proposals cannot be applied to provider configuration; export them instead.",
+      proposalId,
+    );
+  });
+
+  const markImplementedExternally: HarnessProposalService["Service"]["markImplementedExternally"] =
+    Effect.fn("HarnessProposalService.markImplementedExternally")(function* (proposalId) {
+      return yield* sql
         .withTransaction(
           Effect.gen(function* () {
-            const changed =
-              yield* sql`UPDATE harness_proposals SET status = 'applied', payload_json = ${encodeProposal(next)}, updated_at = ${at} WHERE proposal_id = ${proposalId} AND status = 'applying' RETURNING proposal_id`.pipe(
-                Effect.mapError(() =>
-                  error("Could not record Harness skill application.", proposalId),
-                ),
-              );
-            if (changed.length === 0)
+            const current = yield* read(proposalId);
+            if (current.status !== "approved")
+              return yield* error("Only approved proposals can be marked implemented.", proposalId);
+            if (current.externallyImplementedAt) return current;
+            const at = yield* now();
+            const next: Proposal = { ...current, externallyImplementedAt: at, updatedAt: at };
+            const updated = yield* sql`
+            UPDATE harness_proposals
+            SET payload_json = ${encodeProposal(next)}, updated_at = ${at}
+            WHERE proposal_id = ${proposalId} AND status = 'approved'
+              AND json_extract(payload_json, '$.externallyImplementedAt') IS NULL
+            RETURNING proposal_id
+          `.pipe(
+              Effect.mapError(() => error("Could not record external implementation.", proposalId)),
+            );
+            if (updated.length === 0)
               return yield* error(
-                "Harness proposal changed while it was being applied.",
+                "Harness proposal changed while it was being updated.",
                 proposalId,
               );
-            yield* addAudit(next, "applied", null, at);
+            yield* addAudit(next, "implemented_externally", null, at);
             return next;
           }),
         )
@@ -508,23 +535,53 @@ const make = Effect.gen(function* () {
           Effect.mapError((cause) =>
             isHarnessError(cause)
               ? cause
-              : error("Could not record Harness skill application.", proposalId),
+              : error("Could not record external implementation.", proposalId),
           ),
-        ),
-    );
-    if (Exit.isFailure(persisted)) {
-      yield* skills.rollback(proposal.scope, toSkillReceipt(receipt));
-      return yield* Effect.failCause(persisted.cause);
-    }
-    yield* skills.commit(proposal.scope, toSkillReceipt(receipt));
-    return publicProposal(persisted.value);
+        );
+    });
+
+  const exportProposal: HarnessProposalService["Service"]["export"] = Effect.fn(
+    "HarnessProposalService.export",
+  )(function* (proposalId) {
+    const proposal = yield* read(proposalId);
+    if (proposal.status !== "approved")
+      return yield* error("Only approved proposals can be exported.", proposalId);
+    const filename = proposal.skillName
+      .trim()
+      .toLocaleLowerCase()
+      .replace(/[^\p{L}\p{N}]+/gu, "-")
+      .replace(/^-+|-+$/g, "");
+    if (!filename) return yield* error("Proposal skill name cannot be exported.", proposalId);
+    if (
+      (!proposal.target || proposal.target.resourceType === "skill") &&
+      proposal.contentDiff.after !== null
+    )
+      return { filename: `${filename}.md`, content: proposal.contentDiff.after };
+    const target = proposal.target;
+    const content = [
+      `# ${proposal.skillName}`,
+      `Resource: ${target?.resourceType ?? "skill"}`,
+      `Scope: ${scopeKey(proposal.scope)}`,
+      `Operation: ${proposal.operation}`,
+      `Recommendation: ${target?.expectedModification ?? proposal.rationale}`,
+      `Rationale: ${proposal.rationale}`,
+      `Confidence: ${proposal.confidence}`,
+      `Evidence: ${proposal.evidence.join("; ") || "Unavailable"}`,
+      `Evidence references: ${proposal.sourceRefs.join("; ") || "Unavailable"}`,
+      `Validation: ${target?.validationCriteria.join("; ") || "Unavailable"}`,
+    ].join("\n\n");
+    return { filename: `${filename}-recommendation.md`, content };
   });
 
   const rollback: HarnessProposalService["Service"]["rollback"] = Effect.fn(
     "HarnessProposalService.rollback",
   )(function* (proposalId) {
     const proposal = yield* read(proposalId);
-    if (proposal.status !== "applied" || !proposal.appliedReceipt)
+    if (
+      proposal.applicationMode === "staged" ||
+      proposal.status !== "applied" ||
+      !proposal.appliedReceipt
+    )
       return yield* error(
         "Only applied proposals with a saved rollback receipt can be rolled back.",
         proposalId,
@@ -599,6 +656,8 @@ const make = Effect.gen(function* () {
       }),
     );
     for (const proposal of proposals) {
+      // Only pre-staging rows may have provider-side transactions to recover.
+      if (proposal.applicationMode === "staged") continue;
       if (proposal.status === "applying") {
         yield* skills.recover(proposal.scope, proposal.id);
         const at = yield* now();
@@ -818,6 +877,8 @@ const make = Effect.gen(function* () {
       return yield* transition("rejected", id, note);
     }),
     apply,
+    markImplementedExternally,
+    export: exportProposal,
     rollback,
     recoverInterrupted,
     audit,

@@ -59,10 +59,6 @@ import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts
 import * as PlotlineDagService from "../plotline/PlotlineDagService.ts";
 import * as HarnessEvents from "../harness/events.ts";
 import * as HarnessProposalService from "../harness/HarnessProposalService.ts";
-import * as HarnessHubService from "../harness/HarnessHubService.ts";
-import * as HarnessScopeService from "../harness/HarnessScopeService.ts";
-import * as HarnessMcpService from "../harness/HarnessMcpService.ts";
-import * as HarnessMcpDeploymentService from "../harness/HarnessMcpDeploymentService.ts";
 import * as HarnessSkillsService from "../harness/HarnessSkillsService.ts";
 import * as HarnessEngine from "../harness/engine.ts";
 import * as HarnessAnalysisService from "../harness/HarnessAnalysisService.ts";
@@ -270,9 +266,6 @@ const layerHarnessEventsProvided = HarnessEvents.layer.pipe(
   Layer.provide(Layer.merge(layerOrchestratorProvided, PlotlineDagService.layer)),
 );
 const layerHarnessEngineProvided = HarnessEngine.layer.pipe(Layer.provide(TextGeneration.layer));
-const layerHarnessMcpDeploymentProvided = HarnessMcpDeploymentService.layer.pipe(
-  Layer.provide(layerProjectService),
-);
 
 const layerAgentSessionImporterProvided = AgentSessionImporter.layer.pipe(
   Layer.provide(
@@ -419,12 +412,6 @@ export const layerProduction = Layer.mergeAll(
   layerScheduledTaskProvided,
   PlotlineDagService.layer,
   layerHarnessProposalsProvided,
-  HarnessHubService.layer.pipe(Layer.provide(layerProjectService)),
-  HarnessScopeService.layer.pipe(Layer.provide(layerProjectService)),
-  HarnessMcpService.layer.pipe(
-    Layer.provide(Layer.mergeAll(layerProjectService, layerHarnessMcpDeploymentProvided)),
-  ),
-  layerHarnessMcpDeploymentProvided,
   layerHarnessProposalRecovery,
   layerHarnessEventsProvided,
   layerHarnessAnalysisProvided,

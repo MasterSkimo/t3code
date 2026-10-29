@@ -20,6 +20,27 @@ export const HarnessProposalScope = Schema.Union([
 ]);
 export type HarnessProposalScope = typeof HarnessProposalScope.Type;
 
+export const HarnessProposalResourceType = Schema.Literals([
+  "skill",
+  "instructions",
+  "rules",
+  "hooks",
+  "mcp_recommendation",
+  "orchestration_practice",
+]);
+export type HarnessProposalResourceType = typeof HarnessProposalResourceType.Type;
+
+/** Describes a proposed resource without implying the analyzer discovered or can edit it. */
+export const HarnessProposalTarget = Schema.Struct({
+  resourceType: HarnessProposalResourceType,
+  scope: HarnessProposalScope,
+  operation: HarnessProposalOperation,
+  resourceId: Schema.optional(Schema.String),
+  expectedModification: Schema.String,
+  validationCriteria: Schema.Array(Schema.String),
+});
+export type HarnessProposalTarget = typeof HarnessProposalTarget.Type;
+
 export const HarnessContentDiff = Schema.Struct({
   before: Schema.NullOr(Schema.String),
   after: Schema.NullOr(Schema.String),
@@ -101,6 +122,8 @@ export const HarnessProposal = Schema.Struct({
   engineVersion: Schema.String,
   confidence: Schema.Number,
   rationale: Schema.String,
+  // Optional so proposals persisted before generalized targets remain readable.
+  target: Schema.optional(HarnessProposalTarget),
   status: HarnessProposalStatus,
   createdAt: Schema.String,
   updatedAt: Schema.String,
@@ -108,8 +131,28 @@ export const HarnessProposal = Schema.Struct({
   decisionNote: Schema.NullOr(Schema.String),
   appliedAt: Schema.NullOr(Schema.String),
   appliedReceipt: Schema.NullOr(HarnessSkillReceipt),
+  // Absent on historical rows; set only after a user confirms external implementation.
+  externallyImplementedAt: Schema.optional(Schema.NullOr(Schema.String)),
+  // Absent on historical rows, which retain their legacy rollback path.
+  applicationMode: Schema.optional(Schema.Literal("staged")),
 });
 export type HarnessProposal = typeof HarnessProposal.Type;
+
+export const HarnessProposalExport = Schema.Struct({
+  filename: Schema.String,
+  content: Schema.String,
+});
+export type HarnessProposalExport = typeof HarnessProposalExport.Type;
+
+export const HarnessProposalOutcome = Schema.Struct({
+  proposalId: Schema.String,
+  availableSince: Schema.NullOr(Schema.String),
+  observedCompletedEvents: Schema.NullOr(Schema.Number),
+  observedFailedEvents: Schema.NullOr(Schema.Number),
+  unavailableMetrics: Schema.Array(Schema.String),
+  note: Schema.String,
+});
+export type HarnessProposalOutcome = typeof HarnessProposalOutcome.Type;
 
 export const HarnessProposalCreateInput = Schema.Struct({
   scope: HarnessProposalScope,
@@ -123,6 +166,7 @@ export const HarnessProposalCreateInput = Schema.Struct({
   confidence: Schema.Number,
   rationale: Schema.String,
   skillName: Schema.String,
+  target: Schema.optional(HarnessProposalTarget),
 });
 export type HarnessProposalCreateInput = typeof HarnessProposalCreateInput.Type;
 
@@ -133,6 +177,7 @@ export const HarnessProposalEditPatch = Schema.Struct({
   contentDiff: Schema.optional(HarnessContentDiff),
   confidence: Schema.optional(Schema.Number),
   rationale: Schema.optional(Schema.String),
+  target: Schema.optional(HarnessProposalTarget),
 });
 export type HarnessProposalEditPatch = typeof HarnessProposalEditPatch.Type;
 
@@ -203,6 +248,7 @@ export const HarnessAuditEntry = Schema.Struct({
     "apply_started",
     "apply_recovered",
     "applied",
+    "implemented_externally",
     "rollback_started",
     "rolled_back",
   ]),

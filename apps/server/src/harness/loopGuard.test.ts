@@ -6,41 +6,64 @@ import { it } from "@effect/vitest";
 import { makeLoopGuardCollector } from "./loopGuard.ts";
 
 // Focus on deterministic guard decisions; no provider runtime or model calls are needed.
-const occurrence = DateTime.unsafeMake("2026-10-28T00:00:00Z");
+const occurrence = DateTime.makeUnsafe("2026-10-28T00:00:00Z");
 function event(
-  id: string, type: string, payload: Record<string, unknown>,
+  id: string,
+  type: string,
+  payload: Record<string, unknown>,
 ): OrchestrationV2DomainEvent {
-  return { id, threadId: "thread-1", runId: "run-1", occurredAt: occurrence,
-    type, payload } as unknown as OrchestrationV2DomainEvent;
+  return {
+    id,
+    threadId: "thread-1",
+    runId: "run-1",
+    occurredAt: occurrence,
+    type,
+    payload,
+  } as unknown as OrchestrationV2DomainEvent;
 }
 function command(id: number, input = "npm test", exitCode = 1) {
   return event(`tool-${id}`, "turn-item.updated", {
-    id: `item-${id}`, type: "command_execution", runId: "run-1",
-    input, exitCode, status: "completed", outputIndicatesFailure: exitCode !== 0,
+    id: `item-${id}`,
+    type: "command_execution",
+    runId: "run-1",
+    input,
+    exitCode,
+    status: "completed",
+    outputIndicatesFailure: exitCode !== 0,
     monitor: false,
   });
 }
 function progress(id: number) {
   return event(`file-${id}`, "turn-item.updated", {
-    id: `file-item-${id}`, type: "file_change", runId: "run-1",
-    fileName: "src/index.ts", status: "completed",
+    id: `file-item-${id}`,
+    type: "file_change",
+    runId: "run-1",
+    fileName: "src/index.ts",
+    status: "completed",
   });
 }
 
 it("warns, requests recovery and escalates only after bounded identical calls", () => {
   const guard = makeLoopGuardCollector();
   const signals = Array.from({ length: 8 }, (_, i) => guard.observe(command(i + 1))).flat();
-  NodeAssert.deepEqual(signals.map((signal) => signal.state),
-    ["warning", "recovery", "escalated"]);
-  NodeAssert.deepEqual(signals.map((signal) => signal.observedCount), [3, 5, 8]);
+  NodeAssert.deepEqual(
+    signals.map((signal) => signal.state),
+    ["warning", "recovery", "escalated"],
+  );
+  NodeAssert.deepEqual(
+    signals.map((signal) => signal.observedCount),
+    [3, 5, 8],
+  );
   NodeAssert.ok(signals.every((signal) => signal.advisoryOnly));
   NodeAssert.doesNotMatch(JSON.stringify(signals), /npm test/);
 });
 
 it("does not flag productive long-running and varied operations", () => {
   const guard = makeLoopGuardCollector();
-  NodeAssert.deepEqual(guard.observe(event("start", "run.updated",
-    { id: "run-1", status: "running" })), []);
+  NodeAssert.deepEqual(
+    guard.observe(event("start", "run.updated", { id: "run-1", status: "running" })),
+    [],
+  );
   for (let i = 0; i < 20; i++) {
     NodeAssert.deepEqual(guard.observe(command(i + 1, `compile file ${i}`, 0)), []);
   }
@@ -67,9 +90,11 @@ it("replayed duplicate events never advance a repetition count", () => {
 
 it("escalates repeated failed attempts exactly once", () => {
   const guard = makeLoopGuardCollector();
-  const makeAttempt = (attempt: number) => event(`attempt-${attempt}`,
-    "run-attempt.updated", {
-      runId: "run-1", attemptOrdinal: attempt, status: "failed",
+  const makeAttempt = (attempt: number) =>
+    event(`attempt-${attempt}`, "run-attempt.updated", {
+      runId: "run-1",
+      attemptOrdinal: attempt,
+      status: "failed",
     });
   for (let i = 1; i <= 5; i++) NodeAssert.deepEqual(guard.observe(makeAttempt(i)), []);
   const escalated = guard.observe(makeAttempt(6));

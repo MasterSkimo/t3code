@@ -214,7 +214,9 @@ export function makeSignificantEventCollector(): SignificantEventCollector {
     return [event];
   };
 
-  const observeSignificant = (event: OrchestrationV2DomainEvent): ReadonlyArray<HarnessSignificantEvent> => {
+  const observeSignificant = (
+    event: OrchestrationV2DomainEvent,
+  ): ReadonlyArray<HarnessSignificantEvent> => {
     if (event.type === "message.updated") {
       const message = event.payload;
       if (message.workflowScript) return [];
@@ -261,6 +263,9 @@ export function makeSignificantEventCollector(): SignificantEventCollector {
           );
         }
       }
+      // Only an immediate follow-up can validate the latest run; unrelated user work
+      // breaks the evidence link and must not upgrade an older completion.
+      completedByThread.delete(event.threadId);
       const key = `${event.threadId}:${normalizedText(text)}`;
       if (key) {
         const prior = requests.get(key) ?? { count: 0, sourceRefs: [], evidence: text };
@@ -393,16 +398,18 @@ export function makeSignificantEventCollector(): SignificantEventCollector {
   const observe = (event: OrchestrationV2DomainEvent): ReadonlyArray<HarnessSignificantEvent> => {
     const significant = observeSignificant(event);
     const interventions = loopGuard.observe(event);
-    const emitted = interventions.flatMap((intervention) => add({
-      id: intervention.id,
-      at: intervention.at,
-      threadId: intervention.threadId,
-      type: "loop_guard",
-      // Persist only aggregate counts and event references: no raw tool input or secrets.
-      summary: `Loop Guard: ${intervention.state} (${intervention.reason}, ${intervention.observedCount}).`,
-      evidence: [intervention.recommendation],
-      sourceRefs: [...intervention.evidenceRefs],
-    }));
+    const emitted = interventions.flatMap((intervention) =>
+      add({
+        id: intervention.id,
+        at: intervention.at,
+        threadId: intervention.threadId,
+        type: "loop_guard",
+        // Persist only aggregate counts and event references: no raw tool input or secrets.
+        summary: `Loop Guard: ${intervention.state} (${intervention.reason}, ${intervention.observedCount}).`,
+        evidence: [intervention.recommendation],
+        sourceRefs: [...intervention.evidenceRefs],
+      }),
+    );
     return [...significant, ...emitted];
   };
 
@@ -495,7 +502,8 @@ export const makeStore = Effect.gen(function* () {
       const interventions = newEvents.filter((signal) => signal.type === "loop_guard");
       if (interventions.length > 0) {
         const source = stored.event;
-        const runId = source.runId ??
+        const runId =
+          source.runId ??
           (source.type === "turn-item.updated" ? source.payload.runId : undefined) ??
           (source.type === "run-attempt.updated" ? source.payload.runId : undefined) ??
           (source.type === "run.updated" ? source.payload.id : undefined);
@@ -506,13 +514,18 @@ export const makeStore = Effect.gen(function* () {
             const dag = dags.dags.find((entry) => entry.id === match.dagId);
             if (!dag) continue;
             for (const intervention of interventions) {
-              yield* plotline.addEvent(dag.projectId, {
-                dagId: match.dagId,
-                taskId: match.taskId,
-                message: intervention.summary,
-                level: intervention.summary.includes("resolved") ? "ok"
-                  : intervention.summary.includes("warning") ? "live" : "error",
-              }).pipe(Effect.catchAll(() => Effect.void));
+              yield* plotline
+                .addEvent(dag.projectId, {
+                  dagId: match.dagId,
+                  taskId: match.taskId,
+                  message: intervention.summary,
+                  level: intervention.summary.includes("resolved")
+                    ? "ok"
+                    : intervention.summary.includes("warning")
+                      ? "live"
+                      : "error",
+                })
+                .pipe(Effect.catch(() => Effect.void));
             }
           }
         }

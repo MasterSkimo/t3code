@@ -29,6 +29,13 @@ const runAnalysis = (options: {
   readonly engineId?: string;
   readonly engineFailure?: boolean;
   readonly noEvents?: boolean;
+  readonly resourceType?:
+    | "skill"
+    | "instructions"
+    | "rules"
+    | "hooks"
+    | "mcp_recommendation"
+    | "orchestration_practice";
 }) =>
   Effect.gen(function* () {
     let engineCalls = 0;
@@ -56,6 +63,13 @@ const runAnalysis = (options: {
                     contentDiff: { before: null, after: "---\nname: review-helper\n---\nReview" },
                     confidence: 0.9,
                     rationale: "The same review workflow recurs.",
+                    target: {
+                      resourceType: options.resourceType ?? "skill",
+                      scope: { kind: "global" },
+                      operation: "create",
+                      expectedModification: "Add a shared review checklist recommendation.",
+                      validationCriteria: ["The checklist is provider independent."],
+                    },
                   },
                 ],
               });
@@ -177,4 +191,28 @@ it.effect("allows manual analysis from user context when the event history is em
       }),
     ),
   ),
+);
+
+it.effect(
+  "persists provider-independent MCP recommendations without claiming discovered resources",
+  () =>
+    runAnalysis({ resourceType: "mcp_recommendation" }).pipe(
+      Effect.tap(({ result, createCalls }) =>
+        Effect.sync(() => {
+          assert.strictEqual(result._tag, "Success");
+          if (result._tag === "Success") {
+            const proposal = result.success.proposals[0]!;
+            assert.deepStrictEqual(proposal.target, {
+              resourceType: "mcp_recommendation",
+              scope: { kind: "global" },
+              operation: "create",
+              expectedModification: "Add a shared review checklist recommendation.",
+              validationCriteria: ["The checklist is provider independent."],
+            });
+            assert.deepStrictEqual(proposal.contentDiff, { before: null, after: null });
+          }
+          assert.strictEqual(createCalls, 1);
+        }),
+      ),
+    ),
 );

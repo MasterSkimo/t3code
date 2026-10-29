@@ -220,4 +220,21 @@ describe("collectSignificantEvents", () => {
       "validated_success",
     ]);
   });
+
+  it("does not attribute later positive feedback to a completion after intervening user work", () => {
+    const collector = makeSignificantEventCollector();
+    collector.observe(run("run:older", "completed"));
+    expect(
+      collector.observe(message("follow-up", "Can you also update the tests?", "user", null)),
+    ).toEqual([]);
+    expect(collector.observe(message("approval", "That looks good", "user", null))).toEqual([]);
+    collector.observe(run("run:newer", "completed"));
+    const validation = collector.observe(
+      message("approval-newer", "That looks good", "user", null),
+    );
+    const validated = validation.find((event) => event.type === "validated_success");
+    expect(validated).toBeDefined();
+    expect(validated?.sourceRefs).toContain("run:newer");
+    expect(validated?.sourceRefs).not.toContain("run:older");
+  });
 });

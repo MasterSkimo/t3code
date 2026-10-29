@@ -21,7 +21,6 @@ import * as HarnessProposalService from "./HarnessProposalService.ts";
 import * as HarnessSkillsService from "./HarnessSkillsService.ts";
 import * as HarnessSignificantEvents from "./events.ts";
 import * as HarnessEngine from "./engine.ts";
-import { discoverFederatedCatalog } from "./federatedCatalog.ts";
 
 export interface HarnessAnalysisServiceShape {
   readonly analyze: (input: {
@@ -107,15 +106,6 @@ export const makeHarnessAnalysisService = Effect.gen(function* () {
     if (!budget.allowed || !budget.shouldRun) return { proposals: [] };
 
     const allSkills = yield* skillService.discover(scope);
-    // Federated discovery remains metadata-only. Never send external instruction bodies to inference.
-    const catalog = yield* Effect.tryPromise({
-      try: () => discoverFederatedCatalog({
-        workspaceRoot: cwd,
-        homeDirectory: home,
-        ...(scope.kind === "project" ? { projectId: scope.projectId } : {}),
-      }),
-      catch: () => new HarnessError({ message: "Federated resource discovery failed." }),
-    });
     const serverSettings = yield* settings.getSettings.pipe(
       Effect.mapError(() => new HarnessError({ message: "Could not read provider settings." })),
     );
@@ -124,18 +114,10 @@ export const makeHarnessAnalysisService = Effect.gen(function* () {
     const generated = yield* engine
       .analyze({
         cwd,
+        scope,
         modelSelection: selectedModel,
         context: `${scope.kind === "global" ? "User-wide skill analysis." : "Project skill analysis."}\n${redactSensitive(userContext)?.slice(0, 4_000) ?? ""}`,
         events: scopedEvents,
-        resources: catalog.filter((item) => scope.kind === "project" || item.scope === "global")
-          .map((item) => ({
-            id: item.id,
-            type: item.type,
-            name: item.name,
-            ...(item.provider ? { provider: item.provider } : {}),
-            scope: item.scope,
-            resolution: item.resolution,
-          })),
         skills: allSkills.map((skill) => ({
           id: skill.id,
           title: skill.name,
@@ -164,6 +146,7 @@ export const makeHarnessAnalysisService = Effect.gen(function* () {
     const eligibleProposals = generated.proposals
       .filter((proposal) => proposal.confidence >= defaults.minimumConfidence)
       .filter((proposal) => {
+        if (proposal.target.resourceType !== "skill") return proposal.targetSkillIds.length === 0;
         if (proposal.operation === "create") return proposal.targetSkillIds.length === 0;
         if (proposal.operation === "merge") {
           return (
@@ -189,6 +172,43 @@ export const makeHarnessAnalysisService = Effect.gen(function* () {
         skillById.has(id) ? [skillById.get(id)!] : [],
       );
       const target = targets[0];
+      if (proposal.target.resourceType !== "skill") {
+        return proposals
+          .create({
+            scope,
+            operation: proposal.operation,
+            targetSkillIds: [],
+            skillName: safeSkillName(proposal.skillName) ?? "recommendation",
+            evidence: proposal.evidence
+              .map(redactSensitive)
+              .filter((value): value is string => value !== null)
+              .slice(0, 12),
+            sourceRefs: proposal.sourceRefs.slice(0, 32),
+            contentDiff: { before: null, after: null },
+            engineId: generated.engineId,
+            engineVersion: generated.engineVersion,
+            confidence: proposal.confidence,
+            rationale: redactSensitive(proposal.rationale) ?? "Supported by project evidence.",
+            target: {
+              ...proposal.target,
+              scope,
+              operation: proposal.operation,
+              expectedModification:
+                redactSensitive(proposal.target.expectedModification) ??
+                "Review the recommendation.",
+              validationCriteria: proposal.target.validationCriteria
+                .map(redactSensitive)
+                .filter((value): value is string => value !== null)
+                .slice(0, 8),
+            },
+            ...(requestId === undefined
+              ? {}
+              : {
+                  idempotencyKey: `auto:${requestId}:${proposal.operation}:${proposal.target.resourceType}:${proposal.sourceRefs.join(",")}`,
+                }),
+          })
+          .pipe(Effect.map((value) => ({ kind: "created" as const, value })));
+      }
       const after = redactSensitive(proposal.contentDiff.after);
       const before =
         proposal.operation === "create"
@@ -230,6 +250,18 @@ export const makeHarnessAnalysisService = Effect.gen(function* () {
           confidence: proposal.confidence,
           rationale:
             redactSensitive(proposal.rationale) ?? "Supported by repeated project evidence.",
+          target: {
+            ...proposal.target,
+            scope,
+            operation: proposal.operation,
+            expectedModification:
+              redactSensitive(proposal.target.expectedModification) ??
+              "Review the proposed skill change.",
+            validationCriteria: proposal.target.validationCriteria
+              .map(redactSensitive)
+              .filter((value): value is string => value !== null)
+              .slice(0, 8),
+          },
           ...(requestId === undefined
             ? {}
             : {

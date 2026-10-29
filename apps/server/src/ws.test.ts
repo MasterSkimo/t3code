@@ -77,9 +77,6 @@ import * as ReviewService from "./review/ReviewService.ts";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
 import * as PlotlineDags from "./plotline/PlotlineDagService.ts";
 import * as HarnessProposals from "./harness/HarnessProposalService.ts";
-import * as HarnessHub from "./harness/HarnessHubService.ts";
-import * as HarnessScope from "./harness/HarnessScopeService.ts";
-import * as HarnessMcp from "./harness/HarnessMcpService.ts";
 import * as HarnessAnalysis from "./harness/HarnessAnalysisService.ts";
 import * as SecretRequests from "./secrets/SecretRequests.ts";
 import * as GuestShareService from "./guest/GuestShareService.ts";
@@ -448,9 +445,6 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(ScheduledTasks.ScheduledTaskService)({}),
   Layer.mock(PlotlineDags.PlotlineDagService)({}),
   Layer.mock(HarnessProposals.HarnessProposalService)({}),
-  Layer.mock(HarnessHub.HarnessHubService)({}),
-  Layer.mock(HarnessScope.HarnessScopeService)({}),
-  Layer.mock(HarnessMcp.HarnessMcpService)({}),
   Layer.mock(HarnessAnalysis.HarnessAnalysisService)({}),
   Layer.mock(SecretRequests.SecretRequests)({}),
   Layer.mock(GuestShareService.GuestShareService)({}),

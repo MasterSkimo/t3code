@@ -30,26 +30,9 @@ import {
   HarnessProposalEditInput,
   HarnessProposalListInput,
   HarnessProposalListResult,
+  HarnessProposalExport,
+  HarnessProposalOutcome,
 } from "./harness.ts";
-import { HarnessHubListInput, HarnessHubListResult } from "./harnessHub.ts";
-import {
-  HarnessHubScopePreviewInput,
-  HarnessHubScopePreviewResult,
-  HarnessHubScopeApplyInput,
-  HarnessHubScopeHistoryInput,
-  HarnessHubScopeHistoryResult,
-  HarnessHubScopeHistoryEntry,
-  HarnessHubScopeRollbackInput,
-} from "./hubScope.ts";
-import {
-  HarnessMcpDistributionPreviewInput,
-  HarnessMcpDistributionPreviewResult,
-  HarnessMcpDistributionApplyInput,
-  HarnessMcpDistributionApplyResult,
-  HarnessMcpDeployment,
-  HarnessMcpDeploymentList,
-  HarnessMcpUntrackInput,
-} from "./hubMcp.ts";
 import {
   McpAppCallToolInput,
   McpAppCallToolResult,
@@ -581,21 +564,14 @@ export const WS_METHODS = {
   harnessProposalsApprove: "harness.proposals.approve",
   harnessProposalsReject: "harness.proposals.reject",
   harnessProposalsApply: "harness.proposals.apply",
+  harnessProposalsExport: "harness.proposals.export",
+  harnessProposalsOutcome: "harness.proposals.outcome",
+  harnessProposalsMarkImplementedExternally: "harness.proposals.markImplementedExternally",
   harnessProposalsRollback: "harness.proposals.rollback",
   harnessDefaultsGet: "harness.defaults.get",
   harnessDefaultsSet: "harness.defaults.set",
   harnessAuditList: "harness.audit.list",
   harnessInventoryList: "harness.inventory.list",
-  harnessHubList: "harness.hub.list",
-  harnessScopePreview: "harness.scope.preview",
-  harnessScopeApply: "harness.scope.apply",
-  harnessScopeHistory: "harness.scope.history",
-  harnessScopeRollback: "harness.scope.rollback",
-  harnessMcpDistributionPreview: "harness.mcp.distribution.preview",
-  harnessMcpDistributionApply: "harness.mcp.distribution.apply",
-  harnessMcpAdopt: "harness.mcp.adopt",
-  harnessMcpDeployments: "harness.mcp.deployments",
-  harnessMcpUntrack: "harness.mcp.untrack",
   harnessAnalyze: "harness.analysis.run",
 
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
@@ -1952,6 +1928,27 @@ const WsHarnessProposalsApplyRpc = Rpc.make(WS_METHODS.harnessProposalsApply, {
   error: Schema.Union([HarnessError, EnvironmentAuthorizationError]),
 });
 
+const WsHarnessProposalsExportRpc = Rpc.make(WS_METHODS.harnessProposalsExport, {
+  payload: HarnessDecisionInput,
+  success: HarnessProposalExport,
+  error: Schema.Union([HarnessError, EnvironmentAuthorizationError]),
+});
+
+const WsHarnessProposalsOutcomeRpc = Rpc.make(WS_METHODS.harnessProposalsOutcome, {
+  payload: HarnessDecisionInput,
+  success: HarnessProposalOutcome,
+  error: Schema.Union([HarnessError, EnvironmentAuthorizationError]),
+});
+
+const WsHarnessProposalsMarkImplementedExternallyRpc = Rpc.make(
+  WS_METHODS.harnessProposalsMarkImplementedExternally,
+  {
+    payload: HarnessDecisionInput,
+    success: HarnessProposal,
+    error: Schema.Union([HarnessError, EnvironmentAuthorizationError]),
+  },
+);
+
 const WsHarnessProposalsRollbackRpc = Rpc.make(WS_METHODS.harnessProposalsRollback, {
   payload: HarnessDecisionInput,
   success: HarnessProposal,
@@ -1979,57 +1976,6 @@ const WsHarnessAuditListRpc = Rpc.make(WS_METHODS.harnessAuditList, {
 const WsHarnessInventoryListRpc = Rpc.make(WS_METHODS.harnessInventoryList, {
   payload: HarnessInventoryListInput,
   success: HarnessInventoryListResult,
-  error: Schema.Union([HarnessError, EnvironmentAuthorizationError]),
-});
-
-const WsHarnessHubListRpc = Rpc.make(WS_METHODS.harnessHubList, {
-  payload: HarnessHubListInput,
-  success: HarnessHubListResult,
-  error: Schema.Union([HarnessError, EnvironmentAuthorizationError]),
-});
-const WsHarnessScopePreviewRpc = Rpc.make(WS_METHODS.harnessScopePreview, {
-  payload: HarnessHubScopePreviewInput,
-  success: HarnessHubScopePreviewResult,
-  error: Schema.Union([HarnessError, EnvironmentAuthorizationError]),
-});
-const WsHarnessScopeApplyRpc = Rpc.make(WS_METHODS.harnessScopeApply, {
-  payload: HarnessHubScopeApplyInput,
-  success: HarnessHubScopeHistoryEntry,
-  error: Schema.Union([HarnessError, EnvironmentAuthorizationError]),
-});
-const WsHarnessScopeHistoryRpc = Rpc.make(WS_METHODS.harnessScopeHistory, {
-  payload: HarnessHubScopeHistoryInput,
-  success: HarnessHubScopeHistoryResult,
-  error: Schema.Union([HarnessError, EnvironmentAuthorizationError]),
-});
-const WsHarnessScopeRollbackRpc = Rpc.make(WS_METHODS.harnessScopeRollback, {
-  payload: HarnessHubScopeRollbackInput,
-  success: Schema.Void,
-  error: Schema.Union([HarnessError, EnvironmentAuthorizationError]),
-});
-const WsHarnessMcpDistributionPreviewRpc = Rpc.make(WS_METHODS.harnessMcpDistributionPreview, {
-  payload: HarnessMcpDistributionPreviewInput,
-  success: HarnessMcpDistributionPreviewResult,
-  error: Schema.Union([HarnessError, EnvironmentAuthorizationError]),
-});
-const WsHarnessMcpDistributionApplyRpc = Rpc.make(WS_METHODS.harnessMcpDistributionApply, {
-  payload: HarnessMcpDistributionApplyInput,
-  success: HarnessMcpDistributionApplyResult,
-  error: Schema.Union([HarnessError, EnvironmentAuthorizationError]),
-});
-const WsHarnessMcpAdoptRpc = Rpc.make(WS_METHODS.harnessMcpAdopt, {
-  payload: HarnessMcpDistributionPreviewInput,
-  success: HarnessMcpDeployment,
-  error: Schema.Union([HarnessError, EnvironmentAuthorizationError]),
-});
-const WsHarnessMcpDeploymentsRpc = Rpc.make(WS_METHODS.harnessMcpDeployments, {
-  payload: Schema.Struct({}),
-  success: HarnessMcpDeploymentList,
-  error: Schema.Union([HarnessError, EnvironmentAuthorizationError]),
-});
-const WsHarnessMcpUntrackRpc = Rpc.make(WS_METHODS.harnessMcpUntrack, {
-  payload: HarnessMcpUntrackInput,
-  success: Schema.Boolean,
   error: Schema.Union([HarnessError, EnvironmentAuthorizationError]),
 });
 
@@ -2197,21 +2143,14 @@ export const WsRpcGroup = RpcGroup.make(
   WsHarnessProposalsApproveRpc,
   WsHarnessProposalsRejectRpc,
   WsHarnessProposalsApplyRpc,
+  WsHarnessProposalsExportRpc,
+  WsHarnessProposalsOutcomeRpc,
+  WsHarnessProposalsMarkImplementedExternallyRpc,
   WsHarnessProposalsRollbackRpc,
   WsHarnessDefaultsGetRpc,
   WsHarnessDefaultsSetRpc,
   WsHarnessAuditListRpc,
   WsHarnessInventoryListRpc,
-  WsHarnessHubListRpc,
-  WsHarnessScopePreviewRpc,
-  WsHarnessScopeApplyRpc,
-  WsHarnessScopeHistoryRpc,
-  WsHarnessScopeRollbackRpc,
-  WsHarnessMcpDistributionPreviewRpc,
-  WsHarnessMcpDistributionApplyRpc,
-  WsHarnessMcpAdoptRpc,
-  WsHarnessMcpDeploymentsRpc,
-  WsHarnessMcpUntrackRpc,
   WsHarnessAnalyzeRpc,
   WsScheduledTasksListRpc,
   WsScheduledTasksSubscribeRpc,

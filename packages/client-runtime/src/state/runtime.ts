@@ -694,6 +694,13 @@ export function createEnvironmentQueryAtomFamily<R, ER, Input, A, E>(
             // inside the build) so the settled result arrives asynchronously.
             Effect.andThen(Effect.promise(() => Promise.resolve())),
           );
+        // A query that reads a protected RPC needs the same boundary commands get;
+        // without it `requestGuarded` falls back to the reference's denying default.
+        const authorizeInConnection = <A2, E2, R2>(effect: Effect.Effect<A2, E2, R2>) =>
+          Effect.provideService(effect, RpcPermissionGuard, {
+            authorize: (id, method, payload) =>
+              createCommandPermissions(runtime, method).authorize(get.registry, id, payload),
+          });
         const execute = (): Effect.Effect<
           A,
           | E
@@ -709,11 +716,13 @@ export function createEnvironmentQueryAtomFamily<R, ER, Input, A, E>(
           switch (connectionState.phase) {
             case "connected":
               return Option.isSome(session)
-                ? runInEnvironment(
-                    target.environmentId,
-                    options
-                      .execute(target.input, emit)
-                      .pipe(pendingOnceSessionReplaced(session.value)),
+                ? authorizeInConnection(
+                    runInEnvironment(
+                      target.environmentId,
+                      options
+                        .execute(target.input, emit)
+                        .pipe(pendingOnceSessionReplaced(session.value)),
+                    ),
                   )
                 : Effect.never;
             case "connecting":

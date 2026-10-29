@@ -39,6 +39,7 @@ it.effect(
       );
       const result = yield* engine.analyze({
         cwd: "/repo",
+        scope: { kind: "global" },
         modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
         context: "Private project context",
         events: [
@@ -55,20 +56,22 @@ it.effect(
         skills: [
           { id: "existing", title: "Review", description: "Review code", content: "Review" },
         ],
-        resources: [{
-          id: "skill:known", type: "skill", name: "External workflow",
-          provider: "opencode", scope: "global", resolution: "collision-unresolved",
-        }],
       });
       assert.strictEqual(result.engineId, "native-v1");
       assert.strictEqual(result.engineVersion, "1");
       assert.strictEqual(result.proposals[0]?.confidence, 1);
-      assert.deepStrictEqual(result.proposals[0]?.targetSkillIds, ["new"]);
-      assert.deepStrictEqual(result.proposals[0]?.sourceRefs, ["event:1", "skill:known"]);
+      assert.deepStrictEqual(result.proposals[0]?.targetSkillIds, []);
+      assert.deepStrictEqual(result.proposals[0]?.target, {
+        resourceType: "skill",
+        scope: { kind: "global" },
+        operation: "create",
+        expectedModification: "---\nname: review-helper\n---\n",
+        validationCriteria: ["Review the proposed skill content against the cited evidence."],
+      });
+      assert.deepStrictEqual(result.proposals[0]?.sourceRefs, ["event:1"]);
       assert.ok(prompt.includes("Private project context"));
       assert.ok(prompt.includes("Review code"));
-      assert.ok(prompt.includes("External workflow"));
-      assert.ok(prompt.includes("collision-unresolved"));
+      assert.ok(!prompt.includes("Discovered resources"));
       assert.ok(!prompt.includes("unrelated"));
     }),
 );
