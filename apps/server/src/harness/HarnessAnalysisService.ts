@@ -16,6 +16,11 @@ import * as Schedule from "effect/Schedule";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import {
+  isLiveSubagentShell,
+  type OrchestrationV2ThreadShell,
+  type PlotlineDag,
+} from "@t3tools/contracts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as HarnessProposalService from "./HarnessProposalService.ts";
 import * as HarnessSkillsService from "./HarnessSkillsService.ts";
@@ -33,6 +38,44 @@ export class HarnessAnalysisService extends Context.Service<
   HarnessAnalysisService,
   HarnessAnalysisServiceShape
 >()("t3/harness/HarnessAnalysisService") {}
+
+export function isSafeAutomaticRootAnalysis(
+  event: Pick<HarnessEngine.HarnessAnalysisEvent, "id" | "sourceRefs">,
+  source: Pick<OrchestrationV2ThreadShell, "id" | "lineage">,
+  threads: ReadonlyArray<OrchestrationV2ThreadShell>,
+  dags: ReadonlyArray<PlotlineDag>,
+): boolean {
+  if (!/^(success|failure):/.test(event.id)) return false;
+  const root = threads.find((thread) => thread.id === source.lineage.rootThreadId);
+  if (
+    !root ||
+    root.id !== source.id ||
+    root.lineage.parentThreadId !== null ||
+    root.lineage.relationshipToParent !== null
+  )
+    return false;
+  const terminalRunId = event.sourceRefs[1];
+  if (
+    !terminalRunId ||
+    root.latestRunId !== terminalRunId ||
+    root.activeRunId !== null ||
+    root.activityRunStatus != null
+  )
+    return false;
+  if (
+    threads.some(
+      (thread) =>
+        thread.lineage.rootThreadId === root.id &&
+        thread.lineage.relationshipToParent === "subagent" &&
+        isLiveSubagentShell(thread as Parameters<typeof isLiveSubagentShell>[0]),
+    )
+  )
+    return false;
+  return !dags.some(
+    (dag) =>
+      dag.originatingThreadId === root.id && (dag.state === "running" || dag.state === "waiting"),
+  );
+}
 
 export const makeHarnessAnalysisService = Effect.gen(function* () {
   const engine = yield* HarnessEngine.HarnessEngine;
@@ -56,7 +99,10 @@ export const makeHarnessAnalysisService = Effect.gen(function* () {
     requestId?: string,
     automatic = false,
     userContext = "",
-  ): Effect.fn.Return<{ readonly proposals: ReadonlyArray<HarnessProposal> }, HarnessError> {
+  ): Effect.fn.Return<
+    { readonly proposals: ReadonlyArray<HarnessProposal>; readonly deferred?: boolean },
+    HarnessError
+  > {
     const defaults = yield* proposals.getDefaults(scope);
     if (!defaults.enabled || (automatic && !defaults.autoLearn)) {
       return { proposals: [] };
@@ -79,7 +125,7 @@ export const makeHarnessAnalysisService = Effect.gen(function* () {
       if (!project) return yield* new HarnessError({ message: "Project was not found." });
       cwd = project.workspaceRoot;
       const projectThreads = yield* threads
-        .listProjectThreads({ projectId: ProjectId.make(scope.projectId), includeSubagents: false })
+        .listProjectThreads({ projectId: ProjectId.make(scope.projectId), includeSubagents: true })
         .pipe(
           Effect.mapError(() => new HarnessError({ message: "Could not read project threads." })),
         );
@@ -103,7 +149,8 @@ export const makeHarnessAnalysisService = Effect.gen(function* () {
       today,
       requestId,
     );
-    if (!budget.allowed || !budget.shouldRun) return { proposals: [] };
+    if (!budget.allowed || !budget.shouldRun)
+      return { proposals: [], deferred: automatic && !budget.allowed };
 
     const allSkills = yield* skillService.discover(scope);
     const serverSettings = yield* settings.getSettings.pipe(
@@ -282,28 +329,109 @@ export const makeHarnessAnalysisService = Effect.gen(function* () {
 
   const processAutomaticEvent = Effect.fn("HarnessAnalysisService.processAutomaticEvent")(
     function* (event: HarnessEngine.HarnessAnalysisEvent) {
-      const projectShells = yield* projects.listShells().pipe(Effect.orElseSucceed(() => []));
-      for (const project of projectShells) {
-        if (event.projectId === project.id) {
-          yield* analyzeScope({ kind: "project", projectId: project.id }, event.id, true);
-          return;
+      const projectShells = yield* projects.listShells();
+      // Only terminal root runs create durable candidates. Child and DAG signals below
+      // are wakeups only and cannot independently cause inference.
+      if (/^(success|failure):/.test(event.id) && event.threadId && event.sourceRefs[1]) {
+        let terminalThread: OrchestrationV2ThreadShell | undefined;
+        for (const project of projectShells) {
+          const projectThreads = yield* threads.listProjectThreads({
+            projectId: project.id,
+            includeSubagents: true,
+          });
+          terminalThread = projectThreads.find((thread) => thread.id === event.threadId);
+          if (terminalThread) break;
         }
-        const projectThreads = yield* threads
-          .listProjectThreads({ projectId: project.id, includeSubagents: false })
-          .pipe(Effect.orElseSucceed(() => []));
-        if (!event.threadId || !projectThreads.some((thread) => thread.id === event.threadId))
-          continue;
-        yield* analyzeScope({ kind: "project", projectId: project.id }, event.id, true);
-        break;
+        if (
+          !terminalThread ||
+          (terminalThread.lineage.rootThreadId === terminalThread.id &&
+            terminalThread.lineage.parentThreadId === null)
+        )
+          yield* events.enqueueRootCandidate({
+            eventId: event.id,
+            projectId: event.projectId ?? null,
+            rootThreadId: event.threadId,
+            runId: event.sourceRefs[1],
+            event,
+            at: event.at,
+          });
+      }
+      const candidates = yield* events.pendingRootCandidates();
+      const evaluatedRootRuns = new Set<string>();
+      for (const candidate of candidates) {
+        const evaluateCandidate = Effect.gen(function* () {
+          let project = candidate.projectId
+            ? (projectShells.find((item) => item.id === candidate.projectId) ?? null)
+            : null;
+          if (!project) {
+            for (const item of projectShells) {
+              const projectThreads = yield* threads.listProjectThreads({
+                projectId: item.id,
+                includeSubagents: true,
+              });
+              if (projectThreads.some((thread) => thread.id === candidate.rootThreadId)) {
+                project = item;
+                break;
+              }
+            }
+          }
+          if (!project) {
+            yield* events.failRootCandidate(
+              candidate.eventId,
+              "Project or thread projection is temporarily unavailable.",
+            );
+            return;
+          }
+          const projectThreads = yield* threads.listProjectThreads({
+            projectId: project.id,
+            includeSubagents: true,
+          });
+          const root = projectThreads.find((thread) => thread.id === candidate.rootThreadId);
+          if (!root) {
+            yield* events.failRootCandidate(
+              candidate.eventId,
+              "Root thread projection is temporarily unavailable.",
+            );
+            return;
+          }
+          if (root.lineage.rootThreadId !== root.id || root.lineage.parentThreadId !== null) {
+            yield* events.completeRootCandidate(candidate.eventId);
+            return;
+          }
+          const significantEvent = candidate.event;
+          // Multiple terminal events can remain pending while work is blocked. Only
+          // the candidate for the root's latest run owns analysis for that turn.
+          if (root.latestRunId !== candidate.runId) {
+            yield* events.completeRootCandidate(candidate.eventId);
+            return;
+          }
+          const rootRunKey = `${root.id}:${root.latestRunId}`;
+          if (evaluatedRootRuns.has(rootRunKey)) {
+            yield* events.completeRootCandidate(candidate.eventId);
+            return;
+          }
+          const dags = yield* events.listPlotlineDags(project.id);
+          if (!isSafeAutomaticRootAnalysis(significantEvent, root, projectThreads, dags)) return;
+          evaluatedRootRuns.add(rootRunKey);
+          const outcome = yield* analyzeScope(
+            { kind: "project", projectId: project.id },
+            candidate.eventId,
+            true,
+          );
+          if (!outcome.deferred) yield* events.completeRootCandidate(candidate.eventId);
+        });
+        const outcome = yield* Effect.result(evaluateCandidate);
+        if (outcome._tag === "Failure")
+          yield* events.failRootCandidate(candidate.eventId, "Root candidate evaluation failed.");
       }
     },
   );
 
   const deliverAutomaticEvent = (event: HarnessEngine.HarnessAnalysisEvent) =>
     processAutomaticEvent(event).pipe(
-      Effect.tap(() => events.acknowledge(event.id)),
+      Effect.tap(() => (event.id === "wake:startup" ? Effect.void : events.acknowledge(event.id))),
       Effect.catchCause((cause) =>
-        events.recordFailure(event.id).pipe(
+        (event.id === "wake:startup" ? Effect.succeed(false) : events.recordFailure(event.id)).pipe(
           Effect.flatMap((terminal) =>
             terminal
               ? Effect.logWarning("Automatic Harness event reached its retry limit.", {
@@ -316,7 +444,19 @@ export const makeHarnessAnalysisService = Effect.gen(function* () {
       ),
     );
 
-  yield* Effect.suspend(() => events.stream.pipe(Stream.runForEach(deliverAutomaticEvent))).pipe(
+  const startupWake: HarnessEngine.HarnessAnalysisEvent = {
+    id: "wake:startup",
+    at: "",
+    type: "recovered_workflow",
+    summary: "Recheck durable root analysis candidates.",
+    evidence: [],
+    sourceRefs: [],
+  };
+  yield* Effect.suspend(() =>
+    Stream.concat(Stream.fromIterable([startupWake]), events.stream).pipe(
+      Stream.runForEach(deliverAutomaticEvent),
+    ),
+  ).pipe(
     Effect.tapCause((cause) =>
       Effect.logWarning("Automatic Harness event delivery stopped; retrying.", { cause }),
     ),

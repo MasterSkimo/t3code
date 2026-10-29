@@ -116,3 +116,64 @@ it.effect(
     }).pipe(Effect.provide(layer));
   },
 );
+
+it.effect("keeps deferred root candidates durable outside the bounded signal snapshot", () => {
+  const event = {
+    id: "success:root-run-event",
+    at: "2026-10-27T12:00:00.000Z",
+    threadId: "thread_root",
+    projectId: "project_root",
+    type: "successful_output" as const,
+    summary: "The root run completed.",
+    evidence: [],
+    sourceRefs: ["run-event", "run:root"],
+  };
+  const orchestrator = Orchestrator.OrchestratorV2.of({
+    streamStoredEventsFrom: () => Stream.empty,
+  } as unknown as Orchestrator.OrchestratorV2["Service"]);
+  const plotline = PlotlineDagService.PlotlineDagService.of({
+    subscribe: () => Stream.empty,
+  } as unknown as PlotlineDagService.PlotlineDagService["Service"]);
+  const layer = Layer.mergeAll(
+    SqlitePersistence.layerMemory,
+    Layer.succeed(Orchestrator.OrchestratorV2, orchestrator),
+    Layer.succeed(PlotlineDagService.PlotlineDagService, plotline),
+  );
+
+  return Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const firstStore = yield* Events.makeStore;
+    yield* firstStore.enqueueRootCandidate({
+      eventId: event.id,
+      projectId: event.projectId,
+      rootThreadId: event.threadId,
+      runId: "run:root",
+      event,
+      at: event.at,
+    });
+    for (let sequence = 1; sequence <= 101; sequence += 1) {
+      const signal = { ...event, id: `signal:${sequence}` };
+      yield* sql`INSERT INTO harness_significant_events (event_id, sequence, payload_json, created_at)
+        VALUES (${signal.id}, ${sequence}, ${JSON.stringify(signal)}, ${signal.at})`;
+    }
+
+    const restartedStore = yield* Events.makeStore;
+    assert.strictEqual(restartedStore.snapshot().length, 100);
+    assert.isFalse(restartedStore.snapshot().some((signal) => signal.id === event.id));
+    const pending = yield* restartedStore.pendingRootCandidates();
+    assert.strictEqual(pending.length, 1);
+    assert.strictEqual(pending[0]?.eventId, event.id);
+
+    yield* restartedStore.failRootCandidate(event.id, "projection unavailable");
+    assert.strictEqual((yield* restartedStore.pendingRootCandidates())[0]?.deliveryAttempts, 1);
+    yield* restartedStore.failRootCandidate(event.id, "projection unavailable");
+    assert.strictEqual((yield* restartedStore.pendingRootCandidates())[0]?.deliveryAttempts, 2);
+    yield* restartedStore.failRootCandidate(event.id, "projection unavailable");
+    const exhausted = yield* restartedStore.pendingRootCandidates();
+    assert.strictEqual(exhausted.length, 0);
+    const rows = yield* sql<{ readonly status: string; readonly delivery_attempts: number }>`
+      SELECT status, delivery_attempts FROM harness_root_candidates WHERE event_id = ${event.id}
+    `;
+    assert.deepStrictEqual(rows, [{ status: "failed", delivery_attempts: 3 }]);
+  }).pipe(Effect.provide(layer));
+});

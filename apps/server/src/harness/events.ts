@@ -186,6 +186,33 @@ export class HarnessSignificantEventStore extends Context.Service<
     readonly stream: Stream.Stream<HarnessSignificantEvent, HarnessError>;
     readonly acknowledge: (eventId: string) => Effect.Effect<void, HarnessError>;
     readonly recordFailure: (eventId: string) => Effect.Effect<boolean, HarnessError>;
+    readonly listPlotlineDags: (
+      projectId: string,
+    ) => Effect.Effect<ReadonlyArray<PlotlineDag>, HarnessError>;
+    readonly enqueueRootCandidate: (input: {
+      readonly eventId: string;
+      readonly projectId: string | null;
+      readonly rootThreadId: string;
+      readonly runId: string;
+      readonly event: HarnessSignificantEvent;
+      readonly at: string;
+    }) => Effect.Effect<void, HarnessError>;
+    readonly pendingRootCandidates: () => Effect.Effect<
+      ReadonlyArray<{
+        readonly eventId: string;
+        readonly projectId: string | null;
+        readonly rootThreadId: string;
+        readonly runId: string;
+        readonly event: HarnessSignificantEvent;
+        readonly deliveryAttempts: number;
+      }>,
+      HarnessError
+    >;
+    readonly completeRootCandidate: (eventId: string) => Effect.Effect<void, HarnessError>;
+    readonly failRootCandidate: (
+      eventId: string,
+      detail: string,
+    ) => Effect.Effect<void, HarnessError>;
   }
 >()("t3/harness/events/HarnessSignificantEventStore") {}
 
@@ -639,6 +666,86 @@ export const makeStore = Effect.gen(function* () {
         ),
       );
       return (rows[0]?.delivery_attempts ?? MAX_DELIVERY_ATTEMPTS) >= MAX_DELIVERY_ATTEMPTS;
+    }),
+    listPlotlineDags: Effect.fn("HarnessSignificantEventStore.listPlotlineDags")(function* (
+      projectId: string,
+    ) {
+      return yield* plotline.list({ projectId }).pipe(
+        Effect.map((result) => result.dags),
+        Effect.mapError(
+          () => new HarnessError({ message: "Could not read associated Plotline DAGs." }),
+        ),
+      );
+    }),
+    enqueueRootCandidate: Effect.fn("HarnessSignificantEventStore.enqueueRootCandidate")(
+      function* (input) {
+        yield* sql`INSERT INTO harness_root_candidates (event_id, project_id, root_thread_id, run_id, event_json, created_at, updated_at)
+        VALUES (${input.eventId}, ${input.projectId}, ${input.rootThreadId}, ${input.runId}, ${encodeJson(input.event)}, ${input.at}, ${input.at})
+        ON CONFLICT(event_id) DO NOTHING`.pipe(
+          Effect.mapError(
+            () => new HarnessError({ message: "Could not persist a root analysis candidate." }),
+          ),
+        );
+      },
+    ),
+    pendingRootCandidates: Effect.fn("HarnessSignificantEventStore.pendingRootCandidates")(
+      function* () {
+        const rows = yield* sql<{
+          readonly event_id: string;
+          readonly project_id: string | null;
+          readonly root_thread_id: string;
+          readonly run_id: string;
+          readonly event_json: string;
+          readonly delivery_attempts: number;
+        }>`SELECT event_id, project_id, root_thread_id, run_id, event_json, delivery_attempts FROM harness_root_candidates WHERE status = 'pending' ORDER BY created_at`.pipe(
+          Effect.mapError(
+            () => new HarnessError({ message: "Could not load pending root analysis candidates." }),
+          ),
+        );
+        const candidates = [];
+        for (const row of rows) {
+          const event = yield* decodeJson(row.event_json).pipe(Effect.orElseSucceed(() => null));
+          if (event && typeof event === "object" && "id" in event && "sourceRefs" in event) {
+            candidates.push({
+              eventId: row.event_id,
+              projectId: row.project_id,
+              rootThreadId: row.root_thread_id,
+              runId: row.run_id,
+              event: event as HarnessSignificantEvent,
+              deliveryAttempts: row.delivery_attempts,
+            });
+          } else {
+            yield* sql`UPDATE harness_root_candidates SET status = 'failed', failure_detail = 'Stored root event evidence is invalid.', updated_at = CURRENT_TIMESTAMP WHERE event_id = ${row.event_id} AND status = 'pending'`.pipe(
+              Effect.mapError(
+                () =>
+                  new HarnessError({ message: "Could not quarantine an invalid root candidate." }),
+              ),
+            );
+          }
+        }
+        return candidates;
+      },
+    ),
+    completeRootCandidate: Effect.fn("HarnessSignificantEventStore.completeRootCandidate")(
+      function* (eventId: string) {
+        yield* sql`UPDATE harness_root_candidates SET status = 'complete', updated_at = CURRENT_TIMESTAMP WHERE event_id = ${eventId} AND status = 'pending'`.pipe(
+          Effect.mapError(
+            () => new HarnessError({ message: "Could not complete a root analysis candidate." }),
+          ),
+        );
+      },
+    ),
+    failRootCandidate: Effect.fn("HarnessSignificantEventStore.failRootCandidate")(function* (
+      eventId: string,
+      detail: string,
+    ) {
+      yield* sql`UPDATE harness_root_candidates SET delivery_attempts = delivery_attempts + 1,
+        status = CASE WHEN delivery_attempts + 1 >= ${MAX_DELIVERY_ATTEMPTS} THEN 'failed' ELSE 'pending' END,
+        failure_detail = ${detail.slice(0, 500)}, updated_at = CURRENT_TIMESTAMP WHERE event_id = ${eventId} AND status = 'pending'`.pipe(
+        Effect.mapError(
+          () => new HarnessError({ message: "Could not record root candidate failure." }),
+        ),
+      );
     }),
     // Merge the durable outbox and live updates without repeating a signal from both paths.
     stream: Stream.unwrap(
