@@ -8,10 +8,8 @@ import * as DateTime from "effect/DateTime";
  * No provider tool, hook or script is executed by the detector.
  */
 export type LoopGuardState = "normal" | "warning" | "recovery" | "escalated" | "resolved";
-export type LoopGuardReason =
-  | "repeated_tool"
-  | "recurrent_failure"
-  | "retry_budget";
+export type LoopGuardReason = "repeated_tool" | "recurrent_failure" | "retry_budget";
+export type LoopGuardRecoveryAction = "change_strategy" | "escalate_to_orchestrator";
 
 export interface LoopGuardIntervention {
   readonly id: string;
@@ -23,6 +21,7 @@ export interface LoopGuardIntervention {
   readonly observedCount: number;
   readonly evidenceRefs: readonly string[];
   readonly recommendation: string;
+  readonly recoveryAction?: LoopGuardRecoveryAction;
   /** The observer never performs this action. */
   readonly advisoryOnly: true;
 }
@@ -59,10 +58,16 @@ export interface LoopGuardCollector {
 export function makeLoopGuardCollector(
   policy: LoopGuardPolicy = DEFAULT_LOOP_GUARD_POLICY,
 ): LoopGuardCollector {
-  if (!Number.isInteger(policy.warningAfter) || policy.warningAfter < 2 ||
-      !Number.isInteger(policy.recoveryAfter) || policy.recoveryAfter <= policy.warningAfter ||
-      !Number.isInteger(policy.escalationAfter) || policy.escalationAfter <= policy.recoveryAfter ||
-      !Number.isInteger(policy.maxAttempts) || policy.maxAttempts < 2) {
+  if (
+    !Number.isInteger(policy.warningAfter) ||
+    policy.warningAfter < 2 ||
+    !Number.isInteger(policy.recoveryAfter) ||
+    policy.recoveryAfter <= policy.warningAfter ||
+    !Number.isInteger(policy.escalationAfter) ||
+    policy.escalationAfter <= policy.recoveryAfter ||
+    !Number.isInteger(policy.maxAttempts) ||
+    policy.maxAttempts < 2
+  ) {
     throw new Error("Invalid Loop Guard policy.");
   }
   const histories = new Map<string, RunHistory>();
@@ -73,61 +78,78 @@ export function makeLoopGuardCollector(
     const previous = histories.get(key);
     histories.delete(key);
     if (!previous || previous.state === "normal") return [];
-    return [{
-      id: `loop-guard:${event.id}:resolved`,
-      threadId: event.threadId,
-      ...(event.runId ? { runId: event.runId } : {}),
-      at: DateTime.formatIso(event.occurredAt),
-      state: "resolved" as const,
-      reason: "progress" as const,
-      observedCount: previous.count,
-      evidenceRefs: [event.id],
-      recommendation: "Progress observed. Previous repetition warning resolved.",
-      advisoryOnly: true as const,
-    }];
+    return [
+      {
+        id: `loop-guard:${event.id}:resolved`,
+        threadId: event.threadId,
+        ...(event.runId ? { runId: event.runId } : {}),
+        at: DateTime.formatIso(event.occurredAt),
+        state: "resolved" as const,
+        reason: "progress" as const,
+        observedCount: previous.count,
+        evidenceRefs: [event.id],
+        recommendation: "Progress observed. Previous repetition warning resolved.",
+        advisoryOnly: true as const,
+      },
+    ];
   }
 
   function repeat(
-    event: OrchestrationV2DomainEvent, key: string, signature: string,
+    event: OrchestrationV2DomainEvent,
+    key: string,
+    signature: string,
     reason: LoopGuardReason,
   ): readonly LoopGuardIntervention[] {
     const previous = histories.get(key);
     const count = previous?.signature === signature ? previous.count + 1 : 1;
-    const state: LoopGuardState = count >= policy.escalationAfter ? "escalated"
-      : count >= policy.recoveryAfter ? "recovery"
-      : count >= policy.warningAfter ? "warning" : "normal";
-    const evidence = previous?.signature === signature
-      ? [...previous.evidence.slice(-7), event.id] : [event.id];
+    const state: LoopGuardState =
+      count >= policy.escalationAfter
+        ? "escalated"
+        : count >= policy.recoveryAfter
+          ? "recovery"
+          : count >= policy.warningAfter
+            ? "warning"
+            : "normal";
+    const evidence =
+      previous?.signature === signature ? [...previous.evidence.slice(-7), event.id] : [event.id];
     histories.delete(key);
     histories.set(key, { signature, count, state, evidence });
     if (histories.size > 1000) histories.delete(histories.keys().next().value!);
     if (state === "normal" || previous?.state === state) return [];
-    const recommendation = state === "warning"
-      ? "Check that work is progressing; avoid repeating identical unsuccessful calls."
-      : state === "recovery"
-        ? "Ask the orchestrator to change strategy before another retry."
-        : "Repeated recovery was unsuccessful; request orchestrator escalation or suspension.";
-    return [{
-      id: `loop-guard:${event.id}:${state}`,
-      threadId: event.threadId,
-      ...(event.runId ? { runId: event.runId } : {}),
-      at: DateTime.formatIso(event.occurredAt),
-      state,
-      reason,
-      observedCount: count,
-      evidenceRefs: evidence,
-      recommendation,
-      advisoryOnly: true,
-    }];
+    const recommendation =
+      state === "warning"
+        ? "Check that work is progressing; avoid repeating identical unsuccessful calls."
+        : state === "recovery"
+          ? "Ask the orchestrator to change strategy before another retry."
+          : "Repeated recovery was unsuccessful; request orchestrator escalation or suspension.";
+    return [
+      {
+        id: `loop-guard:${event.id}:${state}`,
+        threadId: event.threadId,
+        ...(event.runId ? { runId: event.runId } : {}),
+        at: DateTime.formatIso(event.occurredAt),
+        state,
+        reason,
+        observedCount: count,
+        evidenceRefs: evidence,
+        recommendation,
+        ...(state === "recovery"
+          ? { recoveryAction: "change_strategy" as const }
+          : state === "escalated"
+            ? { recoveryAction: "escalate_to_orchestrator" as const }
+            : {}),
+        advisoryOnly: true,
+      },
+    ];
   }
 
   const observe = (event: OrchestrationV2DomainEvent): readonly LoopGuardIntervention[] => {
     if (seen.has(event.id)) return [];
     seen.add(event.id);
     if (seen.size > 10_000) seen.delete(seen.keys().next().value!);
-    const runId = event.runId ??
-      ((event.type === "run.updated" || event.type === "run.created")
-        ? event.payload.id : undefined);
+    const runId =
+      event.runId ??
+      (event.type === "run.updated" || event.type === "run.created" ? event.payload.id : undefined);
     const itemRunId = event.type === "turn-item.updated" ? event.payload.runId : undefined;
     const key = `${event.threadId}:${runId ?? itemRunId ?? "unknown"}`;
     if (event.type === "checkpoint.captured" && event.payload.status === "ready") {
@@ -140,22 +162,38 @@ export function makeLoopGuardCollector(
       if (item.type === "command_execution" && !item.monitor) {
         // Never retain or surface shell command text or result output, only its hash.
         const signature = digest(`command:${bounded(item.input)}:${item.exitCode ?? "unknown"}`);
-        return repeat(event, key, signature,
+        return repeat(
+          event,
+          key,
+          signature,
           item.status === "failed" || item.outputIndicatesFailure || (item.exitCode ?? 0) !== 0
-            ? "recurrent_failure" : "repeated_tool");
+            ? "recurrent_failure"
+            : "repeated_tool",
+        );
       }
       if (item.type === "file_search") {
-        return repeat(event, key, digest(`file-search:${bounded(item.pattern ?? "")}`),
-          "repeated_tool");
+        return repeat(
+          event,
+          key,
+          digest(`file-search:${bounded(item.pattern ?? "")}`),
+          "repeated_tool",
+        );
       }
       if (item.type === "web_search") {
-        return repeat(event, key, digest(`web-search:${(item.patterns ?? []).map(bounded).join(";")}`),
-          "repeated_tool");
+        return repeat(
+          event,
+          key,
+          digest(`web-search:${(item.patterns ?? []).map(bounded).join(";")}`),
+          "repeated_tool",
+        );
       }
       if (item.type === "error") {
-        return repeat(event, key,
+        return repeat(
+          event,
+          key,
           digest(`error:${item.failure.class}:${item.failure.code ?? ""}`),
-          "recurrent_failure");
+          "recurrent_failure",
+        );
       }
     }
     if (event.type === "run-attempt.updated") {
@@ -165,17 +203,28 @@ export function makeLoopGuardCollector(
       const count = Math.max(old, attempt.attemptOrdinal);
       attemptSeen.set(key, count);
       if (old < policy.maxAttempts && count >= policy.maxAttempts) {
-        return [{
-          id: `loop-guard:${event.id}:attempt-limit`, threadId: event.threadId,
-          runId: attempt.runId, at: DateTime.formatIso(event.occurredAt),
-          state: "escalated", reason: "retry_budget",
-          observedCount: count, evidenceRefs: [event.id],
-          recommendation: "Attempt budget exceeded; request orchestrator escalation.",
-          advisoryOnly: true,
-        }];
+        return [
+          {
+            id: `loop-guard:${event.id}:attempt-limit`,
+            threadId: event.threadId,
+            runId: attempt.runId,
+            at: DateTime.formatIso(event.occurredAt),
+            state: "escalated",
+            reason: "retry_budget",
+            observedCount: count,
+            evidenceRefs: [event.id],
+            recommendation:
+              "Failed-attempt budget is at the configured attempt limit; request orchestrator escalation before another retry.",
+            recoveryAction: "escalate_to_orchestrator",
+            advisoryOnly: true,
+          },
+        ];
       }
     }
-    if (event.type === "run.updated" && ["completed", "cancelled", "rolled_back"].includes(event.payload.status)) {
+    if (
+      event.type === "run.updated" &&
+      ["completed", "cancelled", "rolled_back"].includes(event.payload.status)
+    ) {
       return reset(event, key);
     }
     return [];

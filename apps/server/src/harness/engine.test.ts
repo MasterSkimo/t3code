@@ -51,6 +51,14 @@ it.effect(
             summary: "Repeated review checklist",
             evidence: ["Review steps recur"],
             sourceRefs: ["event:1"],
+            loopGuard: {
+              state: "recovery",
+              reason: "recurrent_failure",
+              observedCount: 5,
+              recommendation: "Change strategy before retrying.",
+              recoveryAction: "change_strategy",
+              advisoryOnly: true,
+            },
           },
         ],
         skills: [
@@ -71,6 +79,8 @@ it.effect(
       assert.deepStrictEqual(result.proposals[0]?.sourceRefs, ["event:1"]);
       assert.ok(prompt.includes("Private project context"));
       assert.ok(prompt.includes("Review code"));
+      assert.ok(prompt.includes('"recoveryAction":"change_strategy"'));
+      assert.ok(prompt.includes('"advisoryOnly":true'));
       assert.ok(!prompt.includes("Discovered resources"));
       assert.ok(!prompt.includes("unrelated"));
     }),

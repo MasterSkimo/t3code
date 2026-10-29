@@ -40,6 +40,11 @@ it.effect("blocks every Plotline mutation in Plan mode while keeping tools proje
           writes.push("update");
           throw new Error("unexpected");
         }),
+      recordVerificationAttempt: () =>
+        Effect.sync(() => {
+          writes.push("verification");
+          throw new Error("unexpected");
+        }),
       addEvent: () =>
         Effect.sync(() => {
           writes.push("event");
@@ -80,6 +85,17 @@ it.effect("blocks every Plotline mutation in Plan mode while keeping tools proje
           },
         ],
         ["plotline_dag_update_task", { dagId: "dag", taskId: "a", state: "done" }],
+        [
+          "plotline_dag_record_verification",
+          {
+            dagId: "dag",
+            taskId: "a",
+            attemptId: "attempt-1",
+            verdict: "pass",
+            summary: "Passed",
+            criterionResults: [],
+          },
+        ],
         ["plotline_dag_add_event", { dagId: "dag", message: "started" }],
       ] as const;
       for (const [name, input] of cases) {
@@ -104,6 +120,7 @@ it.effect(
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* sql`CREATE TABLE plotline_dags (dag_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, payload_json TEXT NOT NULL, updated_at TEXT NOT NULL)`;
+      yield* sql`CREATE TABLE plotline_task_run_index (project_id TEXT NOT NULL, dag_id TEXT NOT NULL, task_id TEXT NOT NULL, thread_id TEXT NOT NULL, run_id TEXT NOT NULL, PRIMARY KEY(project_id, dag_id, task_id))`;
       const service = yield* PlotlineDagService.PlotlineDagService;
       const initial = yield* Deferred.make<
         { dags: ReadonlyArray<import("@t3tools/contracts").PlotlineDag> },
@@ -145,10 +162,55 @@ it.effect(
       expect(addedResult.at(-1)?.result).toMatchObject({
         tasks: [{ id: "prepare" }, { id: "upgrade", dependsOn: ["prepare"] }],
       });
+      const criteria = yield* call("plotline_dag_update_task", {
+        dagId,
+        taskId: "upgrade",
+        acceptanceCriteria: [{ id: "works", description: "Behavior works" }],
+      });
+      expect(criteria.at(-1)?.result).toMatchObject({
+        tasks: [{ id: "prepare" }, { id: "upgrade", acceptanceCriteria: [{ id: "works" }] }],
+      });
+      const verification = yield* call("plotline_dag_record_verification", {
+        dagId,
+        taskId: "upgrade",
+        attemptId: "upgrade-check-1",
+        verdict: "pass",
+        summary: "The behavior works as expected.",
+        criterionResults: [
+          { criterionId: "works", verdict: "pass", evidence: "Focused test passed." },
+        ],
+      });
+      expect(verification.at(-1)?.result).toMatchObject({
+        tasks: [
+          { id: "prepare", state: "pending" },
+          {
+            id: "upgrade",
+            state: "pending",
+            acceptanceCriteria: [{ id: "works", description: "Behavior works" }],
+            verificationAttempts: [
+              {
+                attemptId: "upgrade-check-1",
+                verdict: "pass",
+                summary: "The behavior works as expected.",
+                criterionResults: [
+                  { criterionId: "works", verdict: "pass", evidence: "Focused test passed." },
+                ],
+              },
+            ],
+          },
+        ],
+      });
       const fetched = yield* call("plotline_dag_get", { dagId });
       expect(fetched.at(-1)?.result).toMatchObject({
         id: dagId,
-        tasks: [{ id: "prepare" }, { id: "upgrade" }],
+        tasks: [
+          { id: "prepare" },
+          {
+            id: "upgrade",
+            acceptanceCriteria: [{ id: "works", description: "Behavior works" }],
+            verificationAttempts: [{ attemptId: "upgrade-check-1", verdict: "pass" }],
+          },
+        ],
       });
       const edited = yield* call("plotline_dag_update_task", {
         dagId,
@@ -166,6 +228,17 @@ it.effect(
       expect(updated.at(-1)?.result).toMatchObject({
         tasks: [
           { id: "prepare", state: "running", threadId, runId: "run:mcp-test", agent: "codex" },
+          { id: "upgrade", state: "pending" },
+        ],
+      });
+      const completed = yield* call("plotline_dag_update_task", {
+        dagId,
+        taskId: "prepare",
+        state: "done",
+      });
+      expect(completed.at(-1)?.result).toMatchObject({
+        tasks: [
+          { id: "prepare", state: "done", threadId, runId: "run:mcp-test", agent: "codex" },
           { id: "upgrade", state: "pending" },
         ],
       });

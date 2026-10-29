@@ -100,7 +100,21 @@ it("escalates repeated failed attempts exactly once", () => {
   const escalated = guard.observe(makeAttempt(6));
   NodeAssert.equal(escalated[0]?.reason, "retry_budget");
   NodeAssert.equal(escalated[0]?.state, "escalated");
+  NodeAssert.equal(escalated[0]?.recoveryAction, "escalate_to_orchestrator");
+  NodeAssert.match(escalated[0]?.recommendation ?? "", /at the configured attempt limit/);
+  NodeAssert.ok(escalated[0]?.advisoryOnly, "budget decision must not claim enforcement");
   NodeAssert.deepEqual(guard.observe(makeAttempt(7)), []);
+});
+
+it("makes repetition recovery decisions explicit without terminating a tool", () => {
+  const guard = makeLoopGuardCollector();
+  let recovery;
+  for (let i = 1; i <= 5; i++) {
+    const signals = guard.observe(command(i));
+    if (signals[0]?.state === "recovery") recovery = signals[0];
+  }
+  NodeAssert.equal(recovery?.recoveryAction, "change_strategy");
+  NodeAssert.ok(recovery?.advisoryOnly);
 });
 
 it("a run completion resolves prior warnings without suspending the orchestrator", () => {

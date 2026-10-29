@@ -221,6 +221,54 @@ describe("collectSignificantEvents", () => {
     ]);
   });
 
+  it("preserves actionable Loop Guard details as advisory Harness signals", () => {
+    const collector = makeSignificantEventCollector();
+    const command = (id: number) =>
+      ({
+        id: `loop_tool_${id}`,
+        type: "turn-item.updated",
+        threadId: "thread_test",
+        runId: "run:loop",
+        occurredAt: later,
+        payload: {
+          id: `loop_item_${id}`,
+          threadId: "thread_test",
+          nodeId: null,
+          type: "command_execution",
+          runId: "run:loop",
+          input: "npm test",
+          exitCode: 1,
+          status: "completed",
+          outputIndicatesFailure: true,
+          monitor: false,
+        },
+      }) as unknown as DomainEvent;
+
+    const warnings = [1, 2, 3].flatMap((id) => collector.observe(command(id)));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.loopGuard).toEqual({
+      state: "warning",
+      reason: "recurrent_failure",
+      observedCount: 3,
+      recommendation:
+        "Check that work is progressing; avoid repeating identical unsuccessful calls.",
+      advisoryOnly: true,
+    });
+    const recovery = [4, 5].flatMap((id) => collector.observe(command(id))).at(-1);
+    expect(recovery?.loopGuard).toMatchObject({
+      state: "recovery",
+      recoveryAction: "change_strategy",
+      advisoryOnly: true,
+    });
+    expect(recovery?.summary).not.toContain("npm test");
+    const escalation = [6, 7, 8].flatMap((id) => collector.observe(command(id))).at(-1);
+    expect(escalation?.loopGuard).toMatchObject({
+      state: "escalated",
+      recoveryAction: "escalate_to_orchestrator",
+      advisoryOnly: true,
+    });
+  });
+
   it("does not attribute later positive feedback to a completion after intervening user work", () => {
     const collector = makeSignificantEventCollector();
     collector.observe(run("run:older", "completed"));

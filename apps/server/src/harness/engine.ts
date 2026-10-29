@@ -11,6 +11,7 @@ import type {
 import type { ModelSelection } from "@t3tools/contracts";
 
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
+import type { LoopGuardIntervention } from "./loopGuard.ts";
 
 export interface HarnessAnalysisEvent {
   readonly id: string;
@@ -28,6 +29,10 @@ export interface HarnessAnalysisEvent {
   readonly summary: string;
   readonly evidence: ReadonlyArray<string>;
   readonly sourceRefs: ReadonlyArray<string>;
+  readonly loopGuard?: Pick<
+    LoopGuardIntervention,
+    "state" | "reason" | "observedCount" | "recommendation" | "recoveryAction" | "advisoryOnly"
+  >;
 }
 
 export interface HarnessAnalysisSkill {
@@ -122,6 +127,7 @@ const analysisPrompt = (input: HarnessAnalysisInput) =>
       summary: bounded(event.summary, MAX_EVENT_TEXT),
       evidence: event.evidence.map((item) => bounded(item, MAX_EVENT_TEXT)).slice(0, 8),
       sourceRefs: event.sourceRefs.slice(0, 8),
+      ...(event.loopGuard ? { loopGuard: event.loopGuard } : {}),
     })),
   )}\n\nExisting skills:\n${JSON.stringify(
     input.skills.slice(0, MAX_SKILLS).map((skill) => ({

@@ -5,6 +5,8 @@ import {
   PlotlineDagAddTasksInput,
   PlotlineDagCreateInput,
   PlotlineDagListResult,
+  PlotlineDagRecordVerificationInput,
+  PlotlineAcceptanceCriterion,
   PlotlineTaskState,
 } from "@t3tools/contracts";
 import { Tool, Toolkit } from "effect/ai";
@@ -59,7 +61,7 @@ const AddTasksTool = Tool.make("plotline_dag_add_tasks", {
 const UpdateTaskTool = Tool.make("plotline_dag_update_task", {
   ...common,
   description:
-    "Update one task's metadata, state, or execution link in a DAG in this thread's project. State transitions and dependencies are validated.",
+    "Update one task's metadata, state, execution link, or acceptance criteria in a DAG in this thread's project. Define criteria before recording verification. State transitions and dependencies are validated.",
   parameters: Schema.Struct({
     dagId: Schema.String,
     taskId: Schema.String,
@@ -68,10 +70,20 @@ const UpdateTaskTool = Tool.make("plotline_dag_update_task", {
     effort: Schema.optional(Schema.Number),
     dependsOn: Schema.optional(Schema.Array(Schema.String)),
     state: Schema.optional(PlotlineTaskState),
+    acceptanceCriteria: Schema.optional(Schema.Array(PlotlineAcceptanceCriterion)),
   }),
   success: PlotlineDag,
 })
   .annotate(Tool.Title, "Update a Plotline task")
+  .annotate(Tool.Destructive, false);
+const RecordVerificationTool = Tool.make("plotline_dag_record_verification", {
+  ...common,
+  description:
+    "Record a structured verification attempt for a task against its acceptance criteria. Include an attemptId, overall verdict, summary, and a result for each criterion you evaluated. Recording verification never completes or changes the task state; use the task state tool separately when appropriate.",
+  parameters: PlotlineDagRecordVerificationInput,
+  success: PlotlineDag,
+})
+  .annotate(Tool.Title, "Record task verification")
   .annotate(Tool.Destructive, false);
 const AddEventTool = Tool.make("plotline_dag_add_event", {
   ...common,
@@ -88,5 +100,6 @@ export const PlotlineToolkit = Toolkit.make(
   GetTool,
   AddTasksTool,
   UpdateTaskTool,
+  RecordVerificationTool,
   AddEventTool,
 );

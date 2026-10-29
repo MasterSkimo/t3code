@@ -85,6 +85,17 @@ const layer = McpToolAccess.toLayer(PlotlineToolkit, {
         .pipe(Effect.mapError(unavailable));
     }),
   ),
+  plotline_dag_record_verification: McpToolAccess.writes((input) =>
+    Effect.gen(function* () {
+      const context = yield* readCaller();
+      yield* assertWritablePlanMode(context);
+      const projectId = yield* resolveProjectId(context, undefined);
+      const service = yield* PlotlineDagService.PlotlineDagService;
+      return yield* service
+        .recordVerificationAttempt(projectId, input)
+        .pipe(Effect.mapError(unavailable));
+    }),
+  ),
   plotline_dag_add_event: McpToolAccess.writes((input) =>
     Effect.gen(function* () {
       const context = yield* readCaller();

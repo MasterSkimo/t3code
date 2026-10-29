@@ -1,5 +1,5 @@
 import * as Schema from "effect/Schema";
-import { ThreadId } from "./baseSchemas.ts";
+import { PositiveInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 
 export const PlotlineTaskState = Schema.Literals([
   "pending",
@@ -22,6 +22,50 @@ export const PlotlineDagEvent = Schema.Struct({
 });
 export type PlotlineDagEvent = typeof PlotlineDagEvent.Type;
 
+export const PlotlineVerificationVerdict = Schema.Literals(["pass", "fail", "inconclusive"]);
+export type PlotlineVerificationVerdict = typeof PlotlineVerificationVerdict.Type;
+
+const VerificationId = TrimmedNonEmptyString.check(Schema.isMaxLength(128));
+const VerificationText = Schema.String.check(Schema.isMaxLength(8_192));
+const VerificationSummary = TrimmedNonEmptyString.check(Schema.isMaxLength(2_048));
+const VerificationCriteria = Schema.Array(
+  Schema.Struct({
+    id: VerificationId,
+    description: TrimmedNonEmptyString.check(Schema.isMaxLength(2_048)),
+  }),
+).check(Schema.isMaxLength(100));
+const VerificationCriterionResults = Schema.Array(
+  Schema.Struct({
+    criterionId: VerificationId,
+    verdict: PlotlineVerificationVerdict,
+    evidence: VerificationText,
+  }),
+).check(Schema.isMaxLength(100));
+
+export const PlotlineAcceptanceCriterion = Schema.Struct({
+  id: VerificationId,
+  description: TrimmedNonEmptyString.check(Schema.isMaxLength(2_048)),
+});
+export type PlotlineAcceptanceCriterion = typeof PlotlineAcceptanceCriterion.Type;
+
+export const PlotlineCriterionResult = Schema.Struct({
+  criterionId: VerificationId,
+  verdict: PlotlineVerificationVerdict,
+  evidence: VerificationText,
+});
+export type PlotlineCriterionResult = typeof PlotlineCriterionResult.Type;
+
+export const PlotlineVerificationAttempt = Schema.Struct({
+  id: VerificationId,
+  attemptId: VerificationId,
+  verdict: PlotlineVerificationVerdict,
+  summary: VerificationSummary,
+  criterionResults: VerificationCriterionResults,
+  criteriaVersion: Schema.optional(PositiveInt),
+  createdAt: Schema.String,
+});
+export type PlotlineVerificationAttempt = typeof PlotlineVerificationAttempt.Type;
+
 export const PlotlineDagTask = Schema.Struct({
   id: Schema.String,
   title: Schema.String,
@@ -37,6 +81,11 @@ export const PlotlineDagTask = Schema.Struct({
   updatedAt: Schema.String,
   startedAt: Schema.NullOr(Schema.String),
   finishedAt: Schema.NullOr(Schema.String),
+  acceptanceCriteria: Schema.optional(VerificationCriteria),
+  verificationAttempts: Schema.optional(
+    Schema.Array(PlotlineVerificationAttempt).check(Schema.isMaxLength(100)),
+  ),
+  criteriaVersion: Schema.optional(PositiveInt),
 });
 export type PlotlineDagTask = typeof PlotlineDagTask.Type;
 
@@ -95,8 +144,18 @@ export const PlotlineDagUpdateTaskInput = Schema.Struct({
   threadId: Schema.optional(Schema.NullOr(ThreadId)),
   runId: Schema.optional(Schema.NullOr(Schema.String)),
   agent: Schema.optional(Schema.NullOr(Schema.String)),
+  acceptanceCriteria: Schema.optional(VerificationCriteria),
 });
 export type PlotlineDagUpdateTaskInput = typeof PlotlineDagUpdateTaskInput.Type;
+export const PlotlineDagRecordVerificationInput = Schema.Struct({
+  dagId: Schema.String,
+  taskId: Schema.String,
+  attemptId: VerificationId,
+  verdict: PlotlineVerificationVerdict,
+  summary: VerificationSummary,
+  criterionResults: VerificationCriterionResults,
+});
+export type PlotlineDagRecordVerificationInput = typeof PlotlineDagRecordVerificationInput.Type;
 export const PlotlineDagAddEventInput = Schema.Struct({
   dagId: Schema.String,
   taskId: Schema.optional(Schema.NullOr(Schema.String)),

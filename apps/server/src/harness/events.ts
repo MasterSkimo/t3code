@@ -14,9 +14,10 @@ import * as Schema from "effect/Schema";
 import * as Schedule from "effect/Schedule";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as PlotlineDagService from "../plotline/PlotlineDagService.ts";
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import { findPlotlineTaskRunMatches } from "./plotlineTaskTracking.ts";
 import { classifySuccessfulRun, isCorrectionPrompt } from "./signalQuality.ts";
-import { makeLoopGuardCollector } from "./loopGuard.ts";
+import { makeLoopGuardCollector, type LoopGuardIntervention } from "./loopGuard.ts";
 
 const UnknownJsonString = Schema.fromJsonString(Schema.Unknown);
 const decodeJson = Schema.decodeUnknownEffect(UnknownJsonString);
@@ -40,6 +41,10 @@ export interface HarnessSignificantEvent {
   readonly summary: string;
   readonly evidence: ReadonlyArray<string>;
   readonly sourceRefs: ReadonlyArray<string>;
+  readonly loopGuard?: Pick<
+    LoopGuardIntervention,
+    "state" | "reason" | "observedCount" | "recommendation" | "recoveryAction" | "advisoryOnly"
+  >;
 }
 
 const MAX_EVENTS = 100;
@@ -231,7 +236,7 @@ export function makeSignificantEventCollector(): SignificantEventCollector {
   >();
   const taskStates = new Map<string, { state: string; updatedAt: string }>();
   const loopGuard = makeLoopGuardCollector();
-  let plotlineDags: ReadonlyArray<PlotlineDag> = [];
+  const plotlineRuns = new Map<string, Array<{ dagId: string; taskId: string }>>();
 
   const add = (event: HarnessSignificantEvent): ReadonlyArray<HarnessSignificantEvent> => {
     if (seen.has(event.id)) return [];
@@ -318,7 +323,10 @@ export function makeSignificantEventCollector(): SignificantEventCollector {
     }
 
     if (event.type !== "run.updated") return [];
-    const linkedTasks = findPlotlineTaskRunMatches(plotlineDags, event.threadId, event.payload.id);
+    // Plotline owns the state transition and rechecks the persisted run identity atomically.
+    // A successful run is not verification for tasks with acceptance criteria.
+    // (The async persistence path below uses the same event identity after commit.)
+    const linkedTasks = plotlineRuns.get(`${event.threadId}\0${event.payload.id}`) ?? [];
     const taskRefs = linkedTasks.flatMap((task) => [
       `plotline:${task.dagId}`,
       `plotline:${task.dagId}:${task.taskId}`,
@@ -372,10 +380,16 @@ export function makeSignificantEventCollector(): SignificantEventCollector {
   const observePlotlineDags = (
     dags: ReadonlyArray<PlotlineDag>,
   ): ReadonlyArray<HarnessSignificantEvent> => {
-    plotlineDags = dags;
+    plotlineRuns.clear();
     const found: Array<HarnessSignificantEvent> = [];
     for (const dag of dags) {
       for (const task of dag.tasks) {
+        if (task.threadId !== null && task.runId !== null) {
+          const key = `${task.threadId}\0${task.runId}`;
+          const matches = plotlineRuns.get(key) ?? [];
+          matches.push({ dagId: dag.id, taskId: task.id });
+          plotlineRuns.set(key, matches);
+        }
         const key = `${dag.id}:${task.id}`;
         const previous = taskStates.get(key);
         taskStates.set(key, { state: task.state, updatedAt: task.updatedAt });
@@ -435,6 +449,14 @@ export function makeSignificantEventCollector(): SignificantEventCollector {
         summary: `Loop Guard: ${intervention.state} (${intervention.reason}, ${intervention.observedCount}).`,
         evidence: [intervention.recommendation],
         sourceRefs: [...intervention.evidenceRefs],
+        loopGuard: {
+          state: intervention.state,
+          reason: intervention.reason,
+          observedCount: intervention.observedCount,
+          recommendation: intervention.recommendation,
+          ...(intervention.recoveryAction ? { recoveryAction: intervention.recoveryAction } : {}),
+          advisoryOnly: true,
+        },
       }),
     );
     return [...significant, ...emitted];
@@ -446,6 +468,7 @@ export function makeSignificantEventCollector(): SignificantEventCollector {
 export const makeStore = Effect.gen(function* () {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const plotline = yield* PlotlineDagService.PlotlineDagService;
+  const providers = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
   const sql = yield* SqlClient.SqlClient;
   const collector = makeSignificantEventCollector();
   const changes = yield* PubSub.sliding<HarnessSignificantEvent>(100);
@@ -486,6 +509,22 @@ export const makeStore = Effect.gen(function* () {
       if (committedSequences.has(stored.sequence)) return;
       const found = pendingSignals.get(stored.sequence) ?? collector.observe(stored.event);
       pendingSignals.set(stored.sequence, found);
+      if (
+        stored.event.type === "run.updated" &&
+        ["running", "completed", "failed"].includes(stored.event.payload.status)
+      ) {
+        const instance = yield* providers.getInstance(
+          stored.event.payload.modelSelection.instanceId,
+        );
+        // Complete this idempotent side effect before advancing the durable cursor.
+        if (instance?.driverKind === "opencode") {
+          yield* plotline.reconcileRun(
+            stored.event.threadId,
+            stored.event.payload.id,
+            stored.event.payload.status as "running" | "completed" | "failed",
+          );
+        }
+      }
       const newEvents: Array<HarnessSignificantEvent> = [];
       yield* sql.withTransaction(
         Effect.gen(function* () {

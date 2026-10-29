@@ -7,8 +7,10 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 
 import * as PlotlineDagService from "../plotline/PlotlineDagService.ts";
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as Events from "./events.ts";
@@ -50,6 +52,7 @@ it.effect(
   () => {
     const stored = Array.from({ length: 510 }, (_, index) => makeStoredRun(index + 1));
     const requestedCursors: Array<number> = [];
+    let reconcileCalls = 0;
     const orchestrator = Orchestrator.OrchestratorV2.of({
       streamStoredEventsFrom: (input: { readonly afterSequence?: number } | undefined) => {
         const afterSequence = input?.afterSequence ?? 0;
@@ -59,11 +62,19 @@ it.effect(
     } as unknown as Orchestrator.OrchestratorV2["Service"]);
     const plotline = PlotlineDagService.PlotlineDagService.of({
       subscribe: () => Stream.empty,
+      reconcileRun: () =>
+        Effect.sync(() => {
+          reconcileCalls += 1;
+        }),
     } as unknown as PlotlineDagService.PlotlineDagService["Service"]);
+    const providers = ProviderInstanceRegistry.ProviderInstanceRegistry.of({
+      getInstance: () => Effect.sync(() => undefined),
+    } as unknown as ProviderInstanceRegistry.ProviderInstanceRegistry["Service"]);
     const layer = Layer.mergeAll(
       SqlitePersistence.layerMemory,
       Layer.succeed(Orchestrator.OrchestratorV2, orchestrator),
       Layer.succeed(PlotlineDagService.PlotlineDagService, plotline),
+      Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, providers),
     );
 
     return Effect.gen(function* () {
@@ -82,6 +93,7 @@ it.effect(
     `;
       assert.strictEqual(sequence, 510);
       assert.strictEqual(dedupe?.count, 510);
+      assert.strictEqual(reconcileCalls, 0, "Codex events must not reconcile Plotline tasks");
 
       const restartedStore = yield* Events.makeStore;
       for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -117,6 +129,85 @@ it.effect(
   },
 );
 
+it.effect("reconciles persisted OpenCode run events without verifying Plotline criteria", () => {
+  const completedRun = makeStoredRun(1);
+  const opencodeRun = {
+    ...completedRun.event,
+    payload: {
+      ...completedRun.event.payload,
+      providerInstanceId: "opencode",
+      modelSelection: { instanceId: "opencode", model: "test" },
+    },
+  };
+  const staleRun = { ...opencodeRun, payload: { ...opencodeRun.payload, id: "run:stale" } };
+  const stored = [
+    { ...completedRun, event: opencodeRun },
+    { ...completedRun, sequence: 2, event: staleRun },
+    { ...completedRun, sequence: 1, event: opencodeRun },
+  ];
+  const orchestrator = Orchestrator.OrchestratorV2.of({
+    streamStoredEventsFrom: ({ afterSequence = 0 }: { readonly afterSequence?: number } = {}) =>
+      Stream.fromIterable(stored.filter((event) => event.sequence > afterSequence)),
+  } as unknown as Orchestrator.OrchestratorV2["Service"]);
+  const providers = ProviderInstanceRegistry.ProviderInstanceRegistry.of({
+    getInstance: () => Effect.succeed({ driverKind: "opencode" }),
+  } as unknown as ProviderInstanceRegistry.ProviderInstanceRegistry["Service"]);
+  const persistence = Layer.mergeAll(SqlitePersistence.layerMemory, NodeCrypto.layer);
+  const layer = Layer.mergeAll(
+    PlotlineDagService.layer.pipe(Layer.provideMerge(persistence)),
+    Layer.succeed(Orchestrator.OrchestratorV2, orchestrator),
+    Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, providers),
+  );
+
+  return Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const plotline = yield* PlotlineDagService.PlotlineDagService;
+    const dag = yield* plotline.createForProject("project:stored-run", "thread_persisted", null, {
+      title: "Stored run reconciliation",
+      description: "",
+    });
+    yield* plotline.addTasks("project:stored-run", {
+      dagId: dag.id,
+      tasks: [{ id: "task", title: "Task", description: "", effort: 1, dependsOn: [] }],
+    });
+    yield* plotline.updateTask("project:stored-run", {
+      dagId: dag.id,
+      taskId: "task",
+      state: "running",
+      threadId: completedRun.event.threadId,
+      runId: "run:1",
+      acceptanceCriteria: [{ id: "verified", description: "Explicit verification" }],
+    });
+
+    yield* Events.makeStore;
+    yield* TestClock.adjust("1 second");
+    const rows = yield* sql<{ readonly sequence: number }>`
+      SELECT sequence FROM harness_event_cursor WHERE consumer_id = 'significant-events'
+    `;
+    const cursor = rows[0]?.sequence ?? 0;
+
+    // A fresh consumer replays the stored window; reconciliation and signal persistence stay idempotent.
+    yield* Events.makeStore;
+    yield* TestClock.adjust("1 second");
+
+    const reconciled = yield* plotline.getForProject("project:stored-run", dag.id);
+    const task = reconciled.tasks[0]!;
+    assert.isAtLeast(cursor, 2);
+    assert.strictEqual(task.state, "running", "a successful run is not explicit verification");
+    assert.strictEqual(task.acceptanceCriteria?.length, 1);
+    assert.strictEqual(task.verificationAttempts?.length ?? 0, 0);
+    assert.strictEqual(task.runId, "run:1", "stale run IDs must not replace the indexed run");
+    const [dedupe] = yield* sql<{ readonly count: number }>`
+      SELECT COUNT(*) AS count FROM harness_significant_event_dedupe
+    `;
+    assert.strictEqual(
+      dedupe?.count,
+      1,
+      "replaying the same completion must not duplicate its signal",
+    );
+  }).pipe(Effect.provide(layer));
+});
+
 it.effect("keeps deferred root candidates durable outside the bounded signal snapshot", () => {
   const event = {
     id: "success:root-run-event",
@@ -133,11 +224,16 @@ it.effect("keeps deferred root candidates durable outside the bounded signal sna
   } as unknown as Orchestrator.OrchestratorV2["Service"]);
   const plotline = PlotlineDagService.PlotlineDagService.of({
     subscribe: () => Stream.empty,
+    reconcileRun: () => Effect.void,
   } as unknown as PlotlineDagService.PlotlineDagService["Service"]);
+  const providers = ProviderInstanceRegistry.ProviderInstanceRegistry.of({
+    getInstance: () => Effect.sync(() => undefined),
+  } as unknown as ProviderInstanceRegistry.ProviderInstanceRegistry["Service"]);
   const layer = Layer.mergeAll(
     SqlitePersistence.layerMemory,
     Layer.succeed(Orchestrator.OrchestratorV2, orchestrator),
     Layer.succeed(PlotlineDagService.PlotlineDagService, plotline),
+    Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, providers),
   );
 
   return Effect.gen(function* () {
