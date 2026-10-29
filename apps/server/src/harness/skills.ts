@@ -77,10 +77,6 @@ function metadata(content: string, fallbackName: string) {
   }
 }
 
-export function skillMetadata(content: string, fallbackName: string) {
-  return metadata(content, fallbackName);
-}
-
 async function readSkill(root: SkillRoot, directory: string): Promise<DiscoveredSkill | undefined> {
   const skillPath = path.join(directory, "SKILL.md");
   try {
@@ -148,7 +144,6 @@ export async function discoverSkills(
 
 async function assertSafeRoot(root: string): Promise<string> {
   const absolute = path.resolve(root);
-  await fs.mkdir(path.dirname(absolute), { recursive: true });
   const parentReal = await fs.realpath(path.dirname(absolute));
   const stat = await fs.lstat(absolute).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return undefined;
@@ -211,25 +206,6 @@ async function assertPrivateDirectory(directory: string, root: string): Promise<
     throw new Error("Harness private directory escaped its managed root");
 }
 
-async function copySkillAssets(source: string, destination: string): Promise<void> {
-  for (const entry of await fs.readdir(source)) {
-    if (entry === "SKILL.md" || entry === MARKER) continue;
-    const from = path.join(source, entry);
-    const to = path.join(destination, entry);
-    const info = await fs.lstat(from);
-    if (info.isSymbolicLink())
-      throw new Error("Harness cannot merge skill folders containing symbolic-link assets");
-    if (info.isDirectory()) {
-      await fs.mkdir(to);
-      await copySkillAssets(from, to);
-    } else if (info.isFile()) {
-      await fs.copyFile(from, to);
-    } else {
-      throw new Error("Harness cannot merge skill folders containing special-file assets");
-    }
-  }
-}
-
 async function writeFileAtomically(target: string, contents: string): Promise<void> {
   const info = await fs.lstat(target);
   if (!info.isFile() || info.isSymbolicLink())
@@ -247,46 +223,20 @@ async function writeFileAtomically(target: string, contents: string): Promise<vo
 const writeManagedMarker = (directory: string, marker: unknown) =>
   writeFileAtomically(path.join(directory, MARKER), JSON.stringify(marker));
 
-async function privateJournalDirectory(root: string, create: boolean): Promise<string> {
+async function privateJournalDirectory(root: string): Promise<string> {
   const directory = path.join(root, JOURNAL_DIRECTORY);
-  if (create) await fs.mkdir(directory, { recursive: true });
-  else {
-    const info = await fs.lstat(directory).catch((error: NodeJS.ErrnoException) => {
-      if (error.code === "ENOENT") return undefined;
-      throw error;
-    });
-    if (!info) return directory;
-  }
+  const info = await fs.lstat(directory).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return undefined;
+    throw error;
+  });
+  if (!info) return directory;
   await assertPrivateDirectory(directory, root);
   return directory;
 }
 
-async function writeJournal(root: string, receipt: SkillChangeReceipt): Promise<void> {
-  if (!receipt.transactionId) return;
-  if (!safeSegment(receipt.transactionId)) throw new Error("Invalid Harness transaction id");
-  const directory = await privateJournalDirectory(root, true);
-  const target = path.join(directory, `${receipt.transactionId}.json`);
-  await fs
-    .lstat(target)
-    .then(() => {
-      throw new Error("Harness transaction already has a recovery journal");
-    })
-    .catch((error: NodeJS.ErrnoException) => {
-      if (error.code !== "ENOENT") throw error;
-    });
-  const temporary = path.join(directory, `.stage-${randomUUID()}`);
-  await fs.writeFile(temporary, JSON.stringify(receipt), { flag: "wx", mode: 0o600 });
-  try {
-    await fs.rename(temporary, target);
-  } catch (error) {
-    await fs.rm(temporary, { force: true });
-    throw error;
-  }
-}
-
 async function readJournal(root: string, transactionId: string): Promise<SkillChangeReceipt> {
   if (!safeSegment(transactionId)) throw new Error("Invalid Harness transaction id");
-  const directory = await privateJournalDirectory(root, false);
+  const directory = await privateJournalDirectory(root);
   const file = path.join(directory, `${transactionId}.json`);
   const info = await fs.lstat(file);
   if (!info.isFile() || info.isSymbolicLink() || info.size > MAX_SKILL_BYTES * 2) {
@@ -301,7 +251,7 @@ async function readJournal(root: string, transactionId: string): Promise<SkillCh
 async function removeJournal(root: string, transactionId: string | undefined): Promise<void> {
   if (!transactionId) return;
   if (!safeSegment(transactionId)) throw new Error("Invalid Harness transaction id");
-  const directory = await privateJournalDirectory(root, false);
+  const directory = await privateJournalDirectory(root);
   const file = path.join(directory, `${transactionId}.json`);
   const info = await fs.lstat(file).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return undefined;
@@ -311,158 +261,6 @@ async function removeJournal(root: string, transactionId: string | undefined): P
   if (!info.isFile() || info.isSymbolicLink())
     throw new Error("Harness recovery journal is not a safe file");
   await fs.rm(file);
-}
-
-/** Apply a reviewed change into a dedicated managed root using sibling staging and atomic renames. */
-export async function applySkillChange(
-  managedRoot: string,
-  change: SkillChange,
-  transactionId?: string,
-  expectedCurrentContent?: string,
-): Promise<SkillChangeReceipt> {
-  if (!safeSegment(change.id)) throw new Error("Skill id must be a single safe path segment");
-  const root = await assertSafeRoot(managedRoot);
-  await fs.mkdir(root, { recursive: true });
-  const target = path.join(root, change.id);
-  const before = await loadOwnedSkill(target);
-  if (expectedCurrentContent !== undefined && before?.content !== expectedCurrentContent) {
-    throw new Error("Managed skill changed before Harness could apply the reviewed change");
-  }
-  if (change.kind === "archive") {
-    if (!before) throw new Error("Only Harness-managed skills can be archived");
-    const archiveRoot = path.join(root, ".archive");
-    await fs.mkdir(archiveRoot, { recursive: true });
-    await assertPrivateDirectory(archiveRoot, root);
-    const archivedTo = path.join(archiveRoot, `${change.id}-${randomUUID()}`);
-    const receipt: SkillChangeReceipt = {
-      target,
-      previousContent: before.content,
-      archivedTo,
-      ...(transactionId ? { transactionId } : {}),
-      change,
-    };
-    await writeJournal(root, receipt);
-    await fs.rename(target, archivedTo);
-    return receipt;
-  }
-  if (
-    !change.name.trim() ||
-    change.name.length > 120 ||
-    Buffer.byteLength(change.content, "utf8") > MAX_SKILL_BYTES
-  ) {
-    throw new Error("Invalid skill name or skill content exceeds the size limit");
-  }
-  const staged = path.join(root, `.stage-${randomUUID()}`);
-  const old = before ? path.join(root, `.previous-${randomUUID()}`) : undefined;
-  const receipt: SkillChangeReceipt = {
-    target,
-    ...(before ? { previousContent: before.content } : {}),
-    ...(old ? { previousPath: old } : {}),
-    appliedHash: hash(change.content),
-    ...(transactionId ? { transactionId } : {}),
-    change,
-  };
-  try {
-    await fs.mkdir(staged);
-    await fs.writeFile(path.join(staged, "SKILL.md"), change.content, { flag: "wx" });
-    await fs.writeFile(path.join(staged, MARKER), JSON.stringify({ hash: hash(change.content) }), {
-      flag: "wx",
-    });
-    if (before) await copySkillAssets(target, staged);
-    await writeJournal(root, receipt);
-    if (before && old) await fs.rename(target, old);
-    try {
-      await fs.rename(staged, target);
-    } catch (error) {
-      if (old) await fs.rename(old, target);
-      throw error;
-    }
-    // Retain a previous managed directory until the database records the receipt.
-  } catch (error) {
-    await fs.rm(staged, { recursive: true, force: true });
-    throw error;
-  }
-  return receipt;
-}
-
-export interface SkillMergeSource {
-  readonly id: string;
-  readonly content: string;
-}
-
-/** Merge the first managed skill with the rest, archiving source directories intact under one journal. */
-export async function applySkillMerge(
-  managedRoot: string,
-  sources: readonly SkillMergeSource[],
-  name: string,
-  content: string,
-  transactionId: string,
-): Promise<SkillChangeReceipt> {
-  if (
-    sources.length < 2 ||
-    !safeSegment(transactionId) ||
-    sources.some((source) => !safeSegment(source.id))
-  ) {
-    throw new Error("A Harness merge requires at least two safe skill targets");
-  }
-  if (new Set(sources.map(({ id }) => id)).size !== sources.length)
-    throw new Error("Harness merge targets must be unique");
-  if (!name.trim() || name.length > 120 || Buffer.byteLength(content, "utf8") > MAX_SKILL_BYTES) {
-    throw new Error("Invalid merged skill name or content exceeds the size limit");
-  }
-  const root = await assertSafeRoot(managedRoot);
-  await fs.mkdir(root, { recursive: true });
-  const primary = sources[0]!;
-  const target = path.join(root, primary.id);
-  const currentPrimary = await loadOwnedSkill(target);
-  if (!currentPrimary || currentPrimary.content !== primary.content) {
-    throw new Error("Primary merge skill changed since Harness proposed this merge");
-  }
-  const sourceTargets: Array<{ target: string; content: string }> = [];
-  for (const source of sources.slice(1)) {
-    const sourcePath = path.join(root, source.id);
-    const skill = await loadOwnedSkill(sourcePath);
-    if (!skill || skill.content !== source.content) {
-      throw new Error("A source merge skill changed since Harness proposed this merge");
-    }
-    sourceTargets.push({ target: sourcePath, content: skill.content });
-  }
-
-  const archiveRoot = path.join(root, ".archive");
-  await fs.mkdir(archiveRoot, { recursive: true });
-  await assertPrivateDirectory(archiveRoot, root);
-  const archivedSources = sourceTargets.map(({ target: sourcePath, content: sourceContent }) => ({
-    target: sourcePath,
-    archivedTo: path.join(archiveRoot, `${path.basename(sourcePath)}-${randomUUID()}`),
-    contentHash: hash(sourceContent),
-  }));
-  const previousPath = path.join(root, `.previous-${randomUUID()}`);
-  const staged = path.join(root, `.stage-${randomUUID()}`);
-  const receipt: SkillChangeReceipt = {
-    target,
-    previousContent: currentPrimary.content,
-    previousPath,
-    appliedHash: hash(content),
-    archivedSources,
-    transactionId,
-    change: { kind: "write", id: primary.id, name, content },
-  };
-  await fs.mkdir(staged);
-  try {
-    await fs.writeFile(path.join(staged, "SKILL.md"), content, { flag: "wx" });
-    await fs.writeFile(path.join(staged, MARKER), JSON.stringify({ hash: hash(content) }), {
-      flag: "wx",
-    });
-    await copySkillAssets(target, staged);
-    await writeJournal(root, receipt);
-    await fs.rename(target, previousPath);
-    await fs.rename(staged, target);
-    for (const source of archivedSources) await fs.rename(source.target, source.archivedTo);
-    return receipt;
-  } catch (error) {
-    await fs.rm(staged, { recursive: true, force: true });
-    throw error;
-  }
 }
 
 /** Mark a successfully persisted application complete by removing its recovery record. */

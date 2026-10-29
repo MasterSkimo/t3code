@@ -22,7 +22,6 @@ const skillsLayer = Layer.succeed(
   HarnessSkills.HarnessSkillsService,
   HarnessSkills.HarnessSkillsService.of({
     discover: () => Effect.succeed([]),
-    apply: () => Effect.succeed(skillReceipt),
     rollback: () => Effect.void,
     commit: () => Effect.void,
     recover: () => Effect.void,
