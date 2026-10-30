@@ -1,34 +1,40 @@
-# Plotline Observer v1
+# Plotline Observer v1 — isolated persistence
 
-Plotline is an optional, read-only view of T3 Code's native execution projection.
+Plotline is an optional, read-only view of T3 Code's execution data. It never schedules, verifies, corrects or settles a T3 run.
 
-## Scope
+## Persistence
 
-- Shows the latest run of the selected T3 conversation and delegated tasks linked to that run.
-- Uses T3's existing `runs` and `subagents` projection. Colors represent statuses recorded by T3.
-- Lines represent recorded delegation only, **not** execution order or task dependencies.
-- Task details display existing prompt/result text without submitting any command.
-- Opens manually from **Right panel → + → Plotline**. It does not open automatically or change native orchestration.
+Based on the isolated database approach used by [drKreshel/t3code](https://github.com/drKreshel/t3code/blob/main/apps/server/src/fork/ForkDatabase.ts).
 
-This first version intentionally does not visualize a pre-execution DAG plan, descendants in other T3 threads, or model-inferred dependencies. Those require an upstream-supported source of plan metadata and should not be fabricated.
+- SQLite file: `<T3 stateDir>/plotline.sqlite` (beside upstream `statev2.sqlite`).
+- Migration history: `plotline_schema_migrations`, **not** `effect_sql_migrations`.
+- Append-only migration scripts: `apps/server/src/plotline/migrations/001_DagSnapshots.ts`.
+- Table: `plotline_dag_snapshots`, keyed by `(thread_id, run_id)`.
+- Full saved graph: nodes, delegation edges, recorded status, model and bounded prompt/result excerpts.
+- Existing native T3 migration registry and T3 SQLite tables are unchanged.
+- The database is owned by the fork, and deleting it resets Plotline history only.
 
-## Architecture
+## Recording
 
-- `observerModel.ts`: pure read-only projection and graph layout
-- `PlotlineObserver.tsx`: UI rendering using the existing live thread projection
-- No additional server, MCP tool, event bus, background worker, SQLite table, migration, or provider hook
-- No task scheduling, correction, acceptance, retry, or settlement behavior
-- `rightPanelStore.ts`: one optional `plotline` panel surface
-- `ChatView.tsx` and existing right-panel components: small UI registration
+`PlotlineRecorder` observes the current conversation's native T3 projection while it is loaded in the web UI, independently of whether the Plotline panel is open. It debounces updates and upserts snapshots using an authenticated `plotline.observer.save` RPC. Saved runs can be loaded after restart using `plotline.observer.list`. The right panel displays **Live** or a saved run, and offers a reload button.
 
-## Removing the extension
+**Limitations:** Recording currently occurs for a conversation loaded in the UI, not for closed/background conversations. This stores *observed execution DAGs*, not future tasks invented by the model or old Plotline-managed acceptance data. Relationships are native T3 delegation links; sibling placement does not imply dependencies. No legacy `.t3` migration/import is provided.
 
-1. Remove `apps/web/src/components/plotline/`.
-2. Remove the `plotline` surface registration from `rightPanelStore.ts`.
-3. Remove the Plotline entries from `RightPanelTabs.tsx`, `RightPanelSurfaceContent.tsx`, and `ChatView.tsx`.
+## Files
 
-T3's native database and orchestration remain unchanged. Existing panel preferences can be reset without touching server data.
+- `apps/server/src/plotline/PlotlineDatabase.ts`: isolated SQLite connection and migration runner
+- `apps/server/src/plotline/migrations/`: append-only schema scripts
+- `apps/server/src/plotline/PlotlineStore.ts`: list/save operations
+- `packages/contracts/src/plotlineObserver.ts`: versioned wire shape and RPC method identifiers
+- `apps/web/src/components/plotline/`: graph, recorder and tests
+- `apps/web/src/state/plotline.ts`: authenticated environment RPC adapter
 
-## Compatibility
+## Upstream patches
 
-This version targets the upstream baseline `pingdotgg/t3code@6575ce32508bd7908444241f3719aa33aaf77f90`. It intentionally does not import experimental Plotline/Harness schema or persistence from the old fork branches.
+The integration touches only UI registrations in `ChatView.tsx`, `RightPanelTabs.tsx`, `RightPanelSurfaceContent.tsx` and `rightPanelStore.ts`, plus small registrations in server startup, WS RPC, contracts, authorization and request metrics.
+
+**No changes** to T3 orchestrator, providers, native migration scripts, native event persistence or command dispatch. Native agent work proceeds even if a Plotline save fails.
+
+## Removal
+
+Delete Plotline-owned files and revert the small imports/registrations listed above. Remove the `plotline.sqlite` file (and any `-wal`/`-shm` companions) only when the T3 server is stopped. No upstream state migration or repair is required.
