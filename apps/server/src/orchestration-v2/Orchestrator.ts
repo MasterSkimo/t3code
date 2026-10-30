@@ -516,6 +516,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "provider.switch":
       return command.threadId;
     case "delegated_task.request":
+    case "delegated_task.verifier.request":
     case "delegated_task.wake-policy":
     case "delegated_task.completion-delivery.acknowledge":
     case "delegated_task.completion-delivery.dispose":
@@ -7130,7 +7131,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   const dispatchDelegatedTaskRequest = Effect.fn("orchestrationV2.dispatch.delegatedTaskRequest")(
     function* (
-      command: Extract<OrchestrationV2Command, { readonly type: "delegated_task.request" }>,
+      command: Extract<
+        OrchestrationV2ServerCommand,
+        { readonly type: "delegated_task.request" | "delegated_task.verifier.request" }
+      >,
       events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
       effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
     ) {
@@ -7155,7 +7159,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const parentRun = parentProjection.runs.find(
         (candidate) => candidate.id === command.parentRunId,
       );
-      if (parentRun === undefined || !isBlockingRun(parentRun)) {
+      if (
+        parentRun === undefined ||
+        (!isBlockingRun(parentRun) &&
+          !(command.type === "delegated_task.verifier.request" && parentRun.status === "completed"))
+      ) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
           commandType: command.type,
@@ -7214,6 +7222,32 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(command.title === undefined ? {} : { title: command.title }),
         ordinal: parentProjection.subagents.length + 1,
       });
+      let verifierWorkspace: Pick<OrchestrationV2AppThread, "branch" | "worktreePath"> | undefined;
+      if (command.type === "delegated_task.verifier.request" && command.workspaceThreadId) {
+        const correction = parentProjection.subagents.find(
+          (candidate) =>
+            candidate.childThreadId === command.workspaceThreadId &&
+            candidate.origin === "app_owned",
+        );
+        if (!correction) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: "Verifier workspace thread is not a child of the parent thread.",
+          });
+        }
+        const correctionProjection = yield* projectionStore
+          .getThreadRecords(command.workspaceThreadId, [])
+          .pipe(mapDispatchError(command));
+        if (correctionProjection.thread.projectId !== parentProjection.thread.projectId) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: "Verifier workspace thread belongs to a different project.",
+          });
+        }
+        verifierWorkspace = correctionProjection.thread;
+      }
       const childThread: OrchestrationV2AppThread = {
         ...makeSubagentChildThread({
           parentThread: parentProjection.thread,
@@ -7229,6 +7263,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         }),
         runtimeMode: command.runtimeMode,
         interactionMode: command.interactionMode,
+        ...(verifierWorkspace === undefined
+          ? {}
+          : { branch: verifierWorkspace.branch, worktreePath: verifierWorkspace.worktreePath }),
         ...(command.workspaceStrategy === undefined ? {} : { branch: null, worktreePath: null }),
       };
       const task: OrchestrationV2Subagent = {
@@ -12114,6 +12151,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         yield* dispatchThreadMergeBack(command, events);
         break;
       case "delegated_task.request":
+      case "delegated_task.verifier.request":
         yield* dispatchDelegatedTaskRequest(command, events, effects);
         break;
       case "delegated_task.wake-policy":

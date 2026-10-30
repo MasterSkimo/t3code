@@ -753,8 +753,13 @@ describe("PlotlineDagService", () => {
           expectedRunId: "run:reverify-correction",
           correctionId: reserved.correction.id,
           state: "requested",
+          promptVersion: 2,
           task: [
-            "Independently verify Plotline task task in DAG " + dag.id + ".",
+            "Independently verify task task in project project:reverify, DAG " + dag.id + ".",
+            "Working directory: Use the correction child thread working directory.",
+            "Task: Task\n",
+            `Correction ${reserved.correction.id}, child thread thread:reverify-correction, run run:reverify-correction.`,
+            "Use the supplied context and criteria directly; do not use Plotline MCP tools to discover the parent DAG.",
             "Evaluate every current acceptance criterion against run run:reverify-correction.",
             "Return structured JSON with verdict (pass, fail, or inconclusive), a concise summary, and one result per criterion with criterionId, verdict, and reproducible evidence.",
             'Current criteria: [{"id":"works","description":"Behavior works"}]',
@@ -776,6 +781,26 @@ describe("PlotlineDagService", () => {
               .state,
           "requested",
           "the verifier request remains recoverable after a service restart",
+        );
+        yield* sql`UPDATE plotline_dags SET payload_json = json_set(json_remove(payload_json, '$.tasks[0].correctionAttempts[0].verifierRequest.promptVersion'), '$.tasks[0].correctionAttempts[0].verifierRequest.task', 'legacy prompt') WHERE dag_id = ${dag.id}`;
+        const migrated = yield* restarted.updateVerifierRequest("project:reverify", {
+          dagId: dag.id,
+          taskId: "task",
+          correctionId: reserved.correction.id,
+          state: "requested",
+          refreshContext: true,
+          expectedCommandId: `plotline-verifier-${reserved.correction.id}`,
+          expectedRetryCount: 0,
+        });
+        const migratedRequest = migrated.tasks[0]!.correctionAttempts![0]!.verifierRequest!;
+        assert.strictEqual(
+          migratedRequest.commandId,
+          `plotline-verifier-${reserved.correction.id}`,
+        );
+        assert.strictEqual(migratedRequest.promptVersion, 2);
+        assert.include(
+          migratedRequest.task,
+          'Current criteria: [{"id":"works","description":"Behavior works"}]',
         );
         const dispatched = yield* restarted.updateVerifierRequest("project:reverify", {
           dagId: dag.id,
@@ -799,6 +824,48 @@ describe("PlotlineDagService", () => {
           }),
         );
         assert.isTrue(backwards._tag === "Failure", "verifier states cannot move backwards");
+        const retry = yield* restarted.updateVerifierRequest("project:reverify", {
+          dagId: dag.id,
+          taskId: "task",
+          correctionId: reserved.correction.id,
+          state: "requested",
+          diagnostic: "Verifier interrupted",
+          expectedRetryCount: 0,
+          expectedCommandId: `plotline-verifier-${reserved.correction.id}`,
+          expectedChildTaskId: "verifier-child",
+        });
+        const duplicateRetry = yield* restarted.updateVerifierRequest("project:reverify", {
+          dagId: dag.id,
+          taskId: "task",
+          correctionId: reserved.correction.id,
+          state: "requested",
+          diagnostic: "Verifier interrupted",
+          expectedRetryCount: 0,
+          expectedCommandId: `plotline-verifier-${reserved.correction.id}`,
+          expectedChildTaskId: "verifier-child",
+        });
+        assert.strictEqual(
+          duplicateRetry.tasks[0]!.correctionAttempts?.[0]?.verifierRequest?.retryCount,
+          1,
+        );
+        const retryRequest = retry.tasks[0]!.correctionAttempts?.[0]?.verifierRequest;
+        assert.strictEqual(retryRequest?.retryCount, 1);
+        assert.strictEqual(
+          Date.parse(retryRequest!.nextRetryAt!) - Date.parse(retry.tasks[0]!.updatedAt),
+          1000,
+        );
+        assert.strictEqual(retryRequest?.diagnostic, "Verifier interrupted");
+        assert.strictEqual(retryRequest?.childThreadId, undefined);
+        assert.strictEqual(retry.tasks[0]!.verificationAttempts?.length, 1);
+        yield* restarted.updateVerifierRequest("project:reverify", {
+          dagId: dag.id,
+          taskId: "task",
+          correctionId: reserved.correction.id,
+          state: "dispatched",
+          childTaskId: "verifier-retry",
+          childThreadId: ThreadId.make("thread:verifier-retry"),
+          childRunId: "run:verifier-retry",
+        });
         const verifierCompleted = yield* restarted.updateVerifierRequest("project:reverify", {
           dagId: dag.id,
           taskId: "task",

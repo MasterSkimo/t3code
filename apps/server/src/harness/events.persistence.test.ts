@@ -365,6 +365,89 @@ it.effect(
   },
 );
 
+it.effect("rotates a legacy rejected verifier command before retrying", () => {
+  const commandIds: Array<string> = [];
+  let firstFailure: Deferred.Deferred<void> | undefined;
+  let secondDispatch: Deferred.Deferred<void> | undefined;
+  let dispatchedRequestPersisted: Deferred.Deferred<void> | undefined;
+  let calls = 0;
+  const orchestrator = Orchestrator.OrchestratorV2.of({
+    streamStoredEventsFrom: () => Stream.empty,
+  } as unknown as Orchestrator.OrchestratorV2["Service"]);
+  const threads = ThreadManagementService.ThreadManagementService.of({
+    dispatch: (command: { readonly commandId: string }) =>
+      Effect.suspend(() => {
+        commandIds.push(command.commandId);
+        calls += 1;
+        if (calls === 1)
+          return Deferred.succeed(firstFailure!, undefined).pipe(
+            Effect.andThen(
+              Effect.fail(
+                Object.assign(new Error("legacy rejection"), {
+                  _tag: "OrchestratorCommandPreviouslyRejectedError",
+                }),
+              ),
+            ),
+          );
+        return Deferred.succeed(secondDispatch!, undefined).pipe(Effect.as(verifierDispatchResult));
+      }),
+  } as unknown as ThreadManagementService.ThreadManagementService["Service"]);
+  const providers = ProviderInstanceRegistry.ProviderInstanceRegistry.of({
+    getInstance: () => Effect.void,
+  } as unknown as ProviderInstanceRegistry.ProviderInstanceRegistry["Service"]);
+  const persistence = Layer.mergeAll(SqlitePersistence.layerMemory, NodeCrypto.layer);
+  const layer = Layer.mergeAll(
+    PlotlineDagService.layer.pipe(Layer.provideMerge(persistence)),
+    Layer.succeed(Orchestrator.OrchestratorV2, orchestrator),
+    Layer.succeed(ThreadManagementService.ThreadManagementService, threads),
+    Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, providers),
+  );
+  return Effect.gen(function* () {
+    firstFailure = yield* Deferred.make<void>();
+    secondDispatch = yield* Deferred.make<void>();
+    dispatchedRequestPersisted = yield* Deferred.make<void>();
+    const plotline = yield* PlotlineDagService.PlotlineDagService;
+    const { dag } = yield* prepareRequestedVerifier(plotline, "project:verifier-dispatch-retry");
+    const observingPlotline = PlotlineDagService.PlotlineDagService.of({
+      ...plotline,
+      updateVerifierRequest: (...args: Parameters<typeof plotline.updateVerifierRequest>) =>
+        plotline
+          .updateVerifierRequest(...args)
+          .pipe(
+            Effect.tap(() =>
+              args[1].state === "dispatched"
+                ? Deferred.succeed(dispatchedRequestPersisted!, undefined)
+                : Effect.void,
+            ),
+          ),
+    });
+    yield* Events.makeStore.pipe(
+      Effect.provideService(PlotlineDagService.PlotlineDagService, observingPlotline),
+    );
+    yield* Deferred.await(firstFailure!);
+    const requestAfterFailure = (yield* plotline.getForProject(
+      "project:verifier-dispatch-retry",
+      dag.id,
+    )).tasks[0]!;
+    assert.strictEqual(requestAfterFailure.state, "running");
+    assert.strictEqual(
+      requestAfterFailure.correctionAttempts?.[0]?.verifierRequest?.state,
+      "requested",
+    );
+
+    yield* TestClock.adjust("1 second");
+    yield* Deferred.await(secondDispatch!);
+    yield* Deferred.await(dispatchedRequestPersisted!);
+    const recovered = (yield* plotline.getForProject("project:verifier-dispatch-retry", dag.id))
+      .tasks[0]!;
+    const request = recovered.correctionAttempts?.[0]?.verifierRequest;
+    assert.strictEqual(request?.state, "dispatched");
+    assert.strictEqual(calls, 2, "recovery retries without waiting for an unrelated event");
+    assert.notStrictEqual(commandIds[0], commandIds[1]);
+    assert.strictEqual(commandIds[1], request?.commandId);
+  }).pipe(Effect.provide(layer), Effect.scoped);
+});
+
 it.effect("durably escalates a permanently rejected verifier dispatch", () => {
   let rejected: Deferred.Deferred<void> | undefined;
   let failedRequestPersisted: Deferred.Deferred<void> | undefined;
@@ -591,6 +674,83 @@ it.effect("reconciles persisted OpenCode run events without verifying Plotline c
   }).pipe(Effect.provide(layer), Effect.scoped);
 });
 
+it.effect("retries inconclusive verifier output without recording an acceptance failure", () => {
+  const result = makeStoredVerifierResult("inconclusive");
+  const orchestrator = Orchestrator.OrchestratorV2.of({
+    streamStoredEventsFrom: ({ afterSequence = 0 }: { readonly afterSequence?: number } = {}) =>
+      Stream.fromIterable([result].filter((event) => event.sequence > afterSequence)),
+  } as unknown as Orchestrator.OrchestratorV2["Service"]);
+  const providers = ProviderInstanceRegistry.ProviderInstanceRegistry.of({
+    getInstance: () => Effect.void,
+  } as unknown as ProviderInstanceRegistry.ProviderInstanceRegistry["Service"]);
+  const persistence = Layer.mergeAll(SqlitePersistence.layerMemory, NodeCrypto.layer);
+  const layer = Layer.mergeAll(
+    PlotlineDagService.layer.pipe(Layer.provideMerge(persistence)),
+    Layer.succeed(Orchestrator.OrchestratorV2, orchestrator),
+    Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, providers),
+  );
+  return Effect.gen(function* () {
+    const plotline = yield* PlotlineDagService.PlotlineDagService;
+    const { dag } = yield* prepareDispatchedVerifier(plotline, "project:inconclusive-verifier");
+    yield* Events.makeStore;
+    yield* TestClock.adjust("1 second");
+    const task = (yield* plotline.getForProject("project:inconclusive-verifier", dag.id)).tasks[0]!;
+    assert.strictEqual(task.state, "running");
+    assert.strictEqual(task.verificationAttempts?.length, 1);
+    assert.strictEqual(task.correctionAttempts?.[0]?.verifierRequest?.state, "requested");
+    assert.strictEqual(task.correctionAttempts?.[0]?.verifierRequest?.retryCount, 1);
+  }).pipe(Effect.provide(layer), Effect.scoped);
+});
+
+it.effect("atomically escalates only the run associated with the failed verifier", () => {
+  const persistence = Layer.mergeAll(SqlitePersistence.layerMemory, NodeCrypto.layer);
+  const layer = PlotlineDagService.layer.pipe(Layer.provideMerge(persistence));
+  return Effect.gen(function* () {
+    const plotline = yield* PlotlineDagService.PlotlineDagService;
+    const current = yield* prepareDispatchedVerifier(plotline, "project:current-verifier-failure");
+    const escalated = yield* plotline.updateVerifierRequest("project:current-verifier-failure", {
+      dagId: current.dag.id,
+      taskId: "task",
+      correctionId: current.correctionId,
+      state: "failed",
+      diagnostic: "Verifier interrupted",
+    });
+    assert.strictEqual(escalated.tasks[0]!.state, "failed");
+    assert.strictEqual(escalated.tasks[0]!.executionLifecycle, "failed_escalated");
+    assert.strictEqual(
+      escalated.tasks[0]!.correctionAttempts?.[0]?.verifierRequest?.state,
+      "failed",
+    );
+    const { dag, correctionId } = yield* prepareDispatchedVerifier(
+      plotline,
+      "project:atomic-verifier-failure",
+    );
+    yield* plotline.updateTask("project:atomic-verifier-failure", {
+      dagId: dag.id,
+      taskId: "task",
+      runId: "run:newer",
+    });
+    const result = yield* plotline.updateVerifierRequest("project:atomic-verifier-failure", {
+      dagId: dag.id,
+      taskId: "task",
+      correctionId,
+      state: "failed",
+      diagnostic: "Verifier interrupted",
+    });
+    assert.strictEqual(result.tasks[0]!.runId, "run:newer");
+    assert.strictEqual(result.tasks[0]!.state, "running");
+    assert.strictEqual(result.tasks[0]!.correctionAttempts?.[0]?.verifierRequest?.state, "failed");
+    const replay = yield* plotline.updateVerifierRequest("project:atomic-verifier-failure", {
+      dagId: dag.id,
+      taskId: "task",
+      correctionId,
+      state: "failed",
+      diagnostic: "Verifier interrupted",
+    });
+    assert.strictEqual(replay.tasks[0]!.state, "running");
+  }).pipe(Effect.provide(layer), Effect.scoped);
+});
+
 it.effect("replays a passing verifier result across restart without duplicating settlement", () => {
   const result = makeStoredVerifierResult("pass");
   const duplicate = { ...makeStoredVerifierResult("pass", 2), event: result.event };
@@ -628,6 +788,86 @@ it.effect("replays a passing verifier result across restart without duplicating 
     assert.strictEqual(replayed.state, "done");
     assert.strictEqual(replayed.verificationAttempts?.length, 2);
     assert.strictEqual(replayed.correctionAttempts?.[0]?.id, correctionId);
+  }).pipe(Effect.provide(layer), Effect.scoped);
+});
+
+it.effect("replays the same verifier evidence after a durable persistence failure", () => {
+  const result = makeStoredVerifierResult("pass");
+  const orchestrator = Orchestrator.OrchestratorV2.of({
+    streamStoredEventsFrom: ({ afterSequence = 0 }: { readonly afterSequence?: number } = {}) =>
+      Stream.fromIterable([result].filter((event) => event.sequence > afterSequence)),
+  } as unknown as Orchestrator.OrchestratorV2["Service"]);
+  const providers = ProviderInstanceRegistry.ProviderInstanceRegistry.of({
+    getInstance: () => Effect.void,
+  } as unknown as ProviderInstanceRegistry.ProviderInstanceRegistry["Service"]);
+  const persistence = Layer.mergeAll(SqlitePersistence.layerMemory, NodeCrypto.layer);
+  const layer = Layer.mergeAll(
+    PlotlineDagService.layer.pipe(Layer.provideMerge(persistence)),
+    Layer.succeed(Orchestrator.OrchestratorV2, orchestrator),
+    Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, providers),
+  );
+  return Effect.gen(function* () {
+    const plotline = yield* PlotlineDagService.PlotlineDagService;
+    const { dag } = yield* prepareDispatchedVerifier(plotline, "project:verifier-write-retry");
+    const firstWriteFailed = yield* Deferred.make<void>();
+    let failFirstAttemptWrite = true;
+    const transientFailure = PlotlineDagService.PlotlineDagService.of({
+      ...plotline,
+      recordVerificationAttempt: (...args: Parameters<typeof plotline.recordVerificationAttempt>) =>
+        Effect.suspend(() => {
+          if (failFirstAttemptWrite) {
+            failFirstAttemptWrite = false;
+            return Deferred.succeed(firstWriteFailed, undefined).pipe(
+              Effect.andThen(
+                Effect.fail(new PlotlineDagError({ message: "temporary write failure" })),
+              ),
+            );
+          }
+          return plotline.recordVerificationAttempt(...args);
+        }),
+    });
+
+    yield* Events.makeStore.pipe(
+      Effect.provideService(PlotlineDagService.PlotlineDagService, transientFailure),
+    );
+    yield* Deferred.await(firstWriteFailed);
+    yield* TestClock.adjust("1 second");
+    const afterFailure = (yield* plotline.getForProject("project:verifier-write-retry", dag.id))
+      .tasks[0]!;
+    assert.strictEqual(afterFailure.state, "running");
+    assert.strictEqual(afterFailure.correctionAttempts?.[0]?.verifierRequest?.state, "dispatched");
+    assert.strictEqual(
+      afterFailure.correctionAttempts?.[0]?.verifierRequest?.persistenceFailures,
+      1,
+    );
+    assert.strictEqual(
+      Date.parse(afterFailure.correctionAttempts![0]!.verifierRequest!.nextRetryAt!) -
+        Date.parse(afterFailure.updatedAt),
+      1000,
+    );
+    assert.strictEqual(afterFailure.verificationAttempts?.length, 1);
+
+    const recovered = yield* Deferred.make<void>();
+    const recovering = PlotlineDagService.PlotlineDagService.of({
+      ...plotline,
+      updateVerifierRequest: (...args: Parameters<typeof plotline.updateVerifierRequest>) =>
+        plotline
+          .updateVerifierRequest(...args)
+          .pipe(
+            Effect.tap(() =>
+              args[1].state === "completed" ? Deferred.succeed(recovered, undefined) : Effect.void,
+            ),
+          ),
+    });
+    yield* Events.makeStore.pipe(
+      Effect.provideService(PlotlineDagService.PlotlineDagService, recovering),
+    );
+    yield* Deferred.await(recovered);
+    const afterRestart = (yield* plotline.getForProject("project:verifier-write-retry", dag.id))
+      .tasks[0]!;
+    assert.strictEqual(afterRestart.state, "done");
+    assert.strictEqual(afterRestart.correctionAttempts?.[0]?.verifierRequest?.state, "completed");
+    assert.strictEqual(afterRestart.verificationAttempts?.length, 2);
   }).pipe(Effect.provide(layer), Effect.scoped);
 });
 

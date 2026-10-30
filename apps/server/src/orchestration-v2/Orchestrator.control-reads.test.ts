@@ -790,6 +790,127 @@ it.effect("settles only the stopped run's background work, once", () =>
   }).pipe(Effect.provide(layerTest)),
 );
 
+it.effect("dispatches a backend verifier after its parent run completes", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const parentThreadId = ThreadId.make("thread:completed-verifier-parent");
+    yield* orchestrator.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("create-completed-verifier-parent"),
+      threadId: parentThreadId,
+      projectId: ProjectId.make("project:completed-verifier"),
+      title: "Parent",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: "feature/test",
+      worktreePath: "/repo-worktree",
+      createdBy: "user",
+      creationSource: "web",
+    });
+    yield* orchestrator.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make("start-completed-verifier-parent"),
+      threadId: parentThreadId,
+      messageId: MessageId.make("message:completed-verifier-parent"),
+      text: "Start",
+      attachments: [],
+      dispatchMode: { type: "start_immediately" },
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const parentRun = (yield* projections.getThreadProjection(parentThreadId)).runs[0]!;
+    const now = yield* DateTime.now;
+    yield* orchestrator.dispatch({
+      type: "delegated_task.request",
+      commandId: CommandId.make("correction-for-completed-verifier"),
+      parentThreadId,
+      parentRunId: parentRun.id,
+      parentNodeId: parentRun.rootNodeId!,
+      task: "Correct the task",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      createdBy: "agent",
+      creationSource: "mcp",
+    });
+    const correctionThreadId = (yield* projections.getThreadProjection(parentThreadId))
+      .subagents[0]!.childThreadId!;
+    const correction = yield* projections.getThreadProjection(correctionThreadId);
+    yield* projections.apply({
+      id: EventId.make("event:correction-workspace"),
+      type: "thread.metadata-updated",
+      threadId: correctionThreadId,
+      occurredAt: now,
+      payload: {
+        ...correction.thread,
+        branch: "correction-branch",
+        worktreePath: "/correction-worktree",
+      },
+    });
+    yield* projections.apply({
+      id: EventId.make("event:completed-verifier-parent"),
+      type: "run.updated",
+      threadId: parentThreadId,
+      runId: parentRun.id,
+      occurredAt: now,
+      payload: { ...parentRun, status: "completed", completedAt: now },
+    });
+    const base = {
+      parentThreadId,
+      parentRunId: parentRun.id,
+      parentNodeId: parentRun.rootNodeId!,
+      task: "Verify the correction",
+      modelSelection,
+      runtimeMode: "full-access" as const,
+      interactionMode: "default" as const,
+    };
+    yield* orchestrator.dispatch({
+      ...base,
+      type: "delegated_task.verifier.request",
+      commandId: CommandId.make("correction-for-completed-verifier"),
+      workspaceThreadId: correctionThreadId,
+      createdBy: "system",
+      creationSource: "server",
+    });
+    assert.equal((yield* projections.getThreadProjection(parentThreadId)).subagents.length, 1);
+    const normal = yield* Effect.exit(
+      orchestrator.dispatch({
+        ...base,
+        type: "delegated_task.request",
+        commandId: CommandId.make("ordinary-completed-parent"),
+        createdBy: "agent",
+        creationSource: "mcp",
+      }),
+    );
+    assert.equal(normal._tag, "Failure");
+    yield* orchestrator.dispatch({
+      ...base,
+      type: "delegated_task.verifier.request",
+      commandId: CommandId.make("verifier-completed-parent"),
+      workspaceThreadId: correctionThreadId,
+      createdBy: "system",
+      creationSource: "server",
+    });
+    const parent = yield* projections.getThreadProjection(parentThreadId);
+    const verifier = parent.subagents.find((task) => task.childThreadId !== correctionThreadId)!;
+    const child = yield* projections.getThreadProjection(verifier.childThreadId!);
+    assert.equal(child.thread.projectId, parent.thread.projectId);
+    assert.equal(child.thread.branch, "correction-branch");
+    assert.equal(child.thread.worktreePath, "/correction-worktree");
+    assert.equal(verifier.runId, parentRun.id);
+    yield* orchestrator.dispatch({
+      ...base,
+      type: "delegated_task.request",
+      commandId: CommandId.make("verifier-completed-parent"),
+      createdBy: "agent",
+      creationSource: "mcp",
+    });
+    assert.equal((yield* projections.getThreadProjection(parentThreadId)).subagents.length, 2);
+  }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect("keeps delegated child pull-request links independent of the parent", () =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
