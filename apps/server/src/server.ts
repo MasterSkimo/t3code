@@ -696,7 +696,7 @@ const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
 
 const layerRuntimeDependencies = layerRuntimeCoreDependencies.pipe(
   // Isolated fork-owned SQLite; no upstream tables, migrations or execution hooks.
-  Layer.provideMerge(PlotlineStore.layer),
+  Layer.provideMerge(PlotlineStore.optionalLayer),
   Layer.provideMerge(layerUsage),
   Layer.provideMerge(layerBackground),
   Layer.provideMerge(layerResourceDiagnostics),
