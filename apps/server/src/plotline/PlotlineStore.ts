@@ -97,3 +97,23 @@ export const layerMemory = Layer.effect(PlotlineStore, make).pipe(
 export const layer = Layer.effect(PlotlineStore, make).pipe(
   Layer.provide(ForkDatabase.layer),
 );
+
+/**
+ * Fork storage must never prevent upstream T3 startup. If its own database or
+ * migrations fail, expose a failing extension service and preserve native runs.
+ */
+export const optionalLayer = layer.pipe(
+  Layer.catchAllCause(() =>
+    Layer.effect(
+      PlotlineStore,
+      Effect.logWarning("Fork Plotline storage unavailable; native T3 remains active.").pipe(
+        Effect.as(
+          PlotlineStore.of({
+            list: () => Effect.fail(failure("Plotline storage is unavailable.")),
+            save: () => Effect.fail(failure("Plotline storage is unavailable.")),
+          }),
+        ),
+      ),
+    ),
+  ),
+);
