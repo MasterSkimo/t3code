@@ -40,14 +40,20 @@ const make = Effect.gen(function* () {
         SELECT payload_json FROM fork_plotline_dag_snapshots
         WHERE thread_id = ${threadId} ORDER BY updated_at DESC LIMIT 100
       `.pipe(Effect.mapError(() => failure("Could not read Plotline snapshots.")));
-      return {
-        dags: yield* Effect.forEach(rows, (row) =>
-          Effect.try({
-            try: () => decodeSnapshot(row.payload_json),
-            catch: () => failure("Stored Plotline DAG data is invalid."),
-          }),
-        ),
-      };
+      // A damaged snapshot must not prevent reading all other DAGs.
+      const dags: PlotlineDagSnapshotType[] = [];
+      for (const row of rows) {
+        const decoded = yield* Effect.try({
+          try: () => decodeSnapshot(row.payload_json),
+          catch: () => failure("Stored Plotline DAG data is invalid."),
+        }).pipe(Effect.option);
+        if (decoded._tag === "Some") {
+          dags.push(decoded.value);
+        } else {
+          yield* Effect.logWarning("Skipping an invalid fork-owned Plotline snapshot.");
+        }
+      }
+      return { dags };
     });
 
   const save: PlotlineStore["Service"]["save"] = (input) =>
