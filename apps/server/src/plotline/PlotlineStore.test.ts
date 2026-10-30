@@ -2,7 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import * as Database from "./PlotlineDatabase.ts";
+import * as Database from "../fork/ForkDatabase.ts";
 import * as Store from "./PlotlineStore.ts";
 
 /** No upstream migration registry or state.sqlite connection is present here. */
@@ -10,9 +10,9 @@ describe("Plotline extension persistence", () => {
   it.effect("applies its own append-only migration exactly once", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* Database.migratePlotlineDatabase;
+      yield* Database.migrateForkDatabase;
       const versions = yield* sql<{ readonly version: number }>`
-        SELECT version FROM plotline_schema_migrations ORDER BY version
+        SELECT version FROM fork_schema_migrations ORDER BY version
       `;
       assert.deepStrictEqual(versions.map((row) => row.version), [1]);
       const tables = yield* sql<{ readonly name: string }>`
