@@ -1,6 +1,7 @@
 import type {
   EditorId,
   EnvironmentId,
+  OrchestrationV2ThreadProjection,
   PreviewAnnotationPayload,
   ProjectId,
   ResolvedKeybindingsConfig,
@@ -31,6 +32,9 @@ const DevicePanel = lazy(() =>
   import("../device/DevicePanel").then((module) => ({ default: module.DevicePanel })),
 );
 const FilePreviewPanel = lazy(() => import("../files/FilePreviewPanel"));
+const PlotlineObserver = lazy(() =>
+  import("../plotline/PlotlineObserver").then((module) => ({ default: module.PlotlineObserver })),
+);
 
 type RightPanelTerminalProps = Omit<
   PersistentThreadTerminalPanelProps,
@@ -61,6 +65,7 @@ export function RightPanelSurfaceContent(props: {
   readonly activeSurfaceId: string | null;
   readonly threadRef: ScopedThreadRef;
   readonly environmentId: EnvironmentId;
+  readonly plotlineProjection: OrchestrationV2ThreadProjection | null;
   readonly visible: boolean;
   readonly composerDraftTarget: ScopedThreadRef | DraftId;
   readonly keybindings: ResolvedKeybindingsConfig;
@@ -79,6 +84,12 @@ export function RightPanelSurfaceContent(props: {
   const { surface, threadRef, visible } = props;
   if (surface === null) return null;
   switch (surface.kind) {
+    case "plotline":
+      return (
+        <Suspense fallback={null}>
+          <PlotlineObserver projection={props.plotlineProjection} />
+        </Suspense>
+      );
     case "preview":
       return (
         <Suspense fallback={null}>
