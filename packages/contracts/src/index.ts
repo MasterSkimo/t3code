@@ -69,3 +69,6 @@ export * from "./worktreeSetup.ts";
 export * from "./secretRequest.ts";
 export * from "./secretReference.ts";
 export * from "./clientRpcPermissions.ts";
+
+// Fork-owned, read-only Plotline snapshot contracts.
+export * from "./plotlineObserver.ts";
