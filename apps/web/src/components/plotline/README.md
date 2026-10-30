@@ -6,10 +6,10 @@ Plotline is an optional, read-only view of T3 Code's execution data. It never sc
 
 Based on the isolated database approach used by [drKreshel/t3code](https://github.com/drKreshel/t3code/blob/main/apps/server/src/fork/ForkDatabase.ts).
 
-- SQLite file: `<T3 stateDir>/plotline.sqlite` (beside upstream `statev2.sqlite`).
-- Migration history: `plotline_schema_migrations`, **not** `effect_sql_migrations`.
-- Append-only migration scripts: `apps/server/src/plotline/migrations/001_DagSnapshots.ts`.
-- Table: `plotline_dag_snapshots`, keyed by `(thread_id, run_id)`.
+- SQLite file: `<T3 stateDir>/fork.sqlite` (beside upstream `statev2.sqlite`). Shared by future fork extensions; never opened by upstream migrations.
+- Migration history: `fork_schema_migrations`, **not** `effect_sql_migrations`.
+- Append-only migration scripts: `apps/server/src/fork/migrations/001_PlotlineDagSnapshots.ts`.
+- Table: `fork_plotline_dag_snapshots`, keyed by `(thread_id, run_id)`.
 - Full saved graph: nodes, delegation edges, recorded status, model and bounded prompt/result excerpts.
 - Existing native T3 migration registry and T3 SQLite tables are unchanged.
 - The database is owned by the fork, and deleting it resets Plotline history only.
@@ -22,7 +22,7 @@ Based on the isolated database approach used by [drKreshel/t3code](https://githu
 
 ## Files
 
-- `apps/server/src/plotline/PlotlineDatabase.ts`: isolated SQLite connection and migration runner
+- `apps/server/src/fork/ForkDatabase.ts`: isolated SQLite connection and migration runner
 - `apps/server/src/plotline/migrations/`: append-only schema scripts
 - `apps/server/src/plotline/PlotlineStore.ts`: list/save operations
 - `packages/contracts/src/plotlineObserver.ts`: versioned wire shape and RPC method identifiers
@@ -37,4 +37,4 @@ The integration touches only UI registrations in `ChatView.tsx`, `RightPanelTabs
 
 ## Removal
 
-Delete Plotline-owned files and revert the small imports/registrations listed above. Remove the `plotline.sqlite` file (and any `-wal`/`-shm` companions) only when the T3 server is stopped. No upstream state migration or repair is required.
+Delete Plotline-owned files and revert the small imports/registrations listed above. Remove the `fork.sqlite` file (and any `-wal`/`-shm` companions) only when the T3 server is stopped. No upstream state migration or repair is required.
