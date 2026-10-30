@@ -222,18 +222,12 @@ export function htmlRenderTheme(
 }
 
 export const HTML_RENDER_THEME_GUIDE = [
-  "Use theme CSS variables on :root, not fixed colors:",
-  "--background, --foreground, --muted, --card, --popover, --secondary, --border, --ring, --primary, --accent, --destructive, --warning, --success, --info, --code-background",
-  "(most have a matching -foreground; accent, destructive, and warning also have -surface),",
-  "--chart-1 to --chart-6, --radius, --font-sans, --font-mono.",
-  "The base sheet sets background, text, and font.",
+  "Use :root variables, not fixed colors: --background/-foreground, --muted[-foreground], --card, --popover, --secondary, --border, --ring, --primary, --accent[-foreground/-surface], --destructive[-foreground/-surface], --warning[-foreground/-surface], --success, --info, --code-background, --chart-1…6, --radius, --font-sans/-mono. Base sheet sets background/text/font.",
 ].join(" ");
 
 export const HTML_RENDER_LAYOUT_GUIDE = [
-  `Frame width is reply width (${HTML_RENDER_COLUMN_WIDTH}px desktop, about 360px phones), on the thread background.`,
-  "Leave html, body, and the outer element with no background color, no outer card, border, banner title, or side padding. This wins over any rule that sets a page background.",
-  "A box that needs its own background gets 16px padding and var(--radius) corners. Give charts fixed pixel heights.",
-  "Let content set the height. Do not use vh units or height:100% on html or body. Both are rejected or loop.",
+  `Frame matches reply width (${HTML_RENDER_COLUMN_WIDTH}px desktop, about 360px phones). Keep html/body/outer element transparent; no outer card, border, title, or side padding.`,
+  "Inner backgrounds: 16px padding and var(--radius). Charts: fixed pixel heights. Let content set height; avoid vh and html/body height:100% (rejected or can loop).",
 ].join(" ");
 
 const HOST_CONTEXT_CHANGED_METHOD = "ui/notifications/host-context-changed";

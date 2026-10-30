@@ -25,8 +25,7 @@ const common = { failure: OrchestratorMcpFailure, failureMode: "return" as const
 
 const CreateTool = Tool.make("plotline_dag_create", {
   ...common,
-  description:
-    "Create a native Plotline DAG in this thread's project. The DAG is linked to this thread. Returns its native ID for follow-up operations.",
+  description: "Create and link a DAG to this thread. Returns its ID.",
   parameters: PlotlineDagCreateInput,
   success: PlotlineDag,
 })
@@ -34,7 +33,7 @@ const CreateTool = Tool.make("plotline_dag_create", {
   .annotate(Tool.Destructive, false);
 const ListTool = Tool.make("plotline_dag_list", {
   ...common,
-  description: "List native Plotline DAGs in this thread's project.",
+  description: "List project DAGs.",
   parameters: Tool.EmptyParams,
   success: PlotlineDagListResult,
 })
@@ -43,7 +42,7 @@ const ListTool = Tool.make("plotline_dag_list", {
   .annotate(Tool.Idempotent, true);
 const GetTool = Tool.make("plotline_dag_get", {
   ...common,
-  description: "Read one native Plotline DAG in this thread's project by dagId.",
+  description: "Get one DAG by `dagId`.",
   parameters: Schema.Struct({ dagId: Schema.String }),
   success: PlotlineDag,
 })
@@ -53,7 +52,7 @@ const GetTool = Tool.make("plotline_dag_get", {
 const AddTasksTool = Tool.make("plotline_dag_add_tasks", {
   ...common,
   description:
-    "Add tasks incrementally to a DAG in this thread's project. Each task ID must be unique; dependencies can reference existing or newly added tasks.",
+    "Add tasks to a DAG. IDs must be unique; dependencies may target existing or added tasks.",
   parameters: PlotlineDagAddTasksInput,
   success: PlotlineDag,
 })
@@ -62,7 +61,7 @@ const AddTasksTool = Tool.make("plotline_dag_add_tasks", {
 const UpdateTaskTool = Tool.make("plotline_dag_update_task", {
   ...common,
   description:
-    "Update one task's metadata, state, execution link, or acceptance criteria in a DAG in this thread's project. Define criteria before recording verification. State transitions and dependencies are validated.",
+    "Update task metadata, state, execution link, or criteria. Define criteria before verification; transitions/dependencies are validated.",
   parameters: Schema.Struct({
     dagId: Schema.String,
     taskId: Schema.String,
@@ -81,7 +80,7 @@ const RecordVerificationTool = Tool.make("plotline_dag_record_verification", {
   ...common,
   dependencies: [...dependencies, HarnessEvents.HarnessSignificantEventStore],
   description:
-    "Record a verifier-reported verdict against an explicitly expected criteria version and run identity (use null when the task has no linked run). Include an attemptId, summary, and a result for each criterion you evaluated. The verdict and evidence are claims supplied by the verifier; Plotline does not independently rerun tests or prove that evidence is reproducible. Submissions whose expected criteria version or run no longer matches are rejected, including replays. Keep attempts in history. A failed verification automatically starts one T3-owned delegated correction using the existing delegation command/outbox, linked to this task and run; use its correctionAttempts[].childTaskId with task_status instead of launching a second delegate. After completion, independently verify against the linked runId with a new attemptId. T3 enforces at most 3 correction cycles by default, then records escalation and stops. Cancellation or interruption ends the lifecycle without further corrections. Recording verification never accepts/completes the task; only a current passing verification can satisfy its completion gate.",
+    "Submit a verifier-reported verdict for explicit `expectedCriteriaVersion` and `expectedRunId` (`null` if unlinked), unique `attemptId`, summary, and per-criterion results/evidence. Evidence is verifier-reported; Plotline does not rerun tests or prove reproducibility. Stale criteria/runs reject; same-content replays are idempotent. Keep attempts. Failure starts one T3 correction; follow `correctionAttempts[].childTaskId` with `task_status`, never delegate again. Independently verify the linked run with a new attempt ID. Max 3 correction cycles by default, then escalate/stop. Cancellation/interruption ends corrections. Recording is not completion; only current passing verification meets the gate.",
   parameters: PlotlineDagRecordVerificationInput,
   success: PlotlineDag,
 })
@@ -89,7 +88,7 @@ const RecordVerificationTool = Tool.make("plotline_dag_record_verification", {
   .annotate(Tool.Destructive, false);
 const AddEventTool = Tool.make("plotline_dag_add_event", {
   ...common,
-  description: "Append a meaningful execution event to a DAG in this thread's project.",
+  description: "Append an event to a DAG.",
   parameters: PlotlineDagAddEventInput,
   success: PlotlineDag,
 })

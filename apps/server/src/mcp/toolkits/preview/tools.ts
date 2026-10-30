@@ -51,7 +51,7 @@ const readonlyBrowserTool = <T extends Tool.Any>(tool: T): T =>
 
 const PreviewStatusTool = Tool.make("preview_status", {
   description:
-    "Report preview tab state: owner, pending dialog, URL, title, loading, viewport, and size. `tabs` lists this thread's tabs. `profiles` lists logins for `preview_open`. Read any listed tab. Act only on your tab, or an unclaimed tab with no human in control.",
+    "Report tab state (owner, dialog, URL, title, loading, viewport, size); `tabs` lists this thread's tabs and `profiles` logins for `preview_open`. Read listed tabs. Act only on your tab or an unclaimed tab with no human in control.",
   parameters: PreviewAutomationTabTargetInput,
   success: PreviewAutomationStatus,
   failure: PreviewToolFailure,
@@ -65,7 +65,7 @@ const PreviewStatusTool = Tool.make("preview_status", {
 const PreviewOpenTool = browserTool(
   Tool.make("preview_open", {
     description:
-      "Open a preview tab in this thread and show it. `open=false` keeps it in the background. Reuses your current tab unless `tabId` or `reuseExistingTab=false` says otherwise. Parallel subagents in one session must each use `reuseExistingTab=false`, then their own returned `tabId`.",
+      "Open and show a tab in this thread (`open=false` keeps it in background). Reuses your current tab unless `tabId` or `reuseExistingTab=false`. Parallel subagents must each set `reuseExistingTab=false` and use their returned `tabId`.",
     parameters: PreviewAutomationOpenInput,
     success: PreviewAutomationStatus,
     failure: PreviewToolFailure,
@@ -130,7 +130,7 @@ const PreviewSetAppearanceTool = safeBrowserTool(
 export const PreviewSnapshotTool = safeBrowserTool(
   Tool.make("preview_snapshot", {
     description:
-      "Use it only when the current request asks for browser work, including checking an edit in the browser. Never use it unasked to verify your own edit, or to repeat a snapshot from an earlier turn. Works on a tab the user is driving. Returns page state, elements, diagnostics, and screenshot size. Target one element with `locator='aria-ref=<ref>'` from `accessibilityTree`, even in frames. Refs die on navigation, a new snapshot, or handoff. Text caps near 20 KB; on your own or an unclaimed tab, `preview_evaluate` reads more. To show a screenshot when asked: `save=true`, then embed ![alt](screenshotPath).",
+      "Only for requested browser work (including checking edits), not unasked verification or repeat snapshots. Works on user-driven tabs. Returns state, elements, diagnostics, and screenshot size. Target via `locator='aria-ref=<ref>'` from `accessibilityTree` (including frames); refs expire on navigation, snapshot, or handoff. Text caps near 20 KB; `preview_evaluate` reads more on your/unclaimed tabs. For a requested screenshot, set `save=true` and embed ![alt](screenshotPath).",
     parameters: Schema.Struct({
       ...PreviewAutomationTabTargetInput.fields,
       includeImage: Schema.optional(
@@ -153,7 +153,7 @@ export const PreviewSnapshotTool = safeBrowserTool(
 const PreviewActTool = browserTool(
   Tool.make("preview_act", {
     description:
-      "Act on the chosen tab. Target with `locator='aria-ref=<ref>'` from `preview_snapshot`; `x` and `y` go together. `timeoutMs` defaults to 15000. click: `button`, `clickCount` 1 to 3. type: literal `text`, `clear=true` replaces it. hover: shows menus or tooltips. select: `values` in one native <select>, by value or label; for a custom dropdown, click it open, then click the option. drag: `source` onto `target`. upload: absolute `paths` answer the file picker `preview_status` reports, [] cancels it, or a `locator` sets an <input type=file>. press: one `key`, such as 'Enter', with `modifiers`, to the focused element; click a field first to focus it. scroll: the tab, or one container with a locator; positive `deltaY` scrolls down, positive `deltaX` right.",
+      "Act on the chosen tab by `aria-ref` from `preview_snapshot` or both `x`/`y` (`timeoutMs` defaults to 15000). Click uses `button`/`clickCount` (1–3); type sends literal `text` (`clear=true` replaces); hover reveals menus/tooltips. Native select uses `values` by value/label; for custom dropdowns click open, then an option. Drag `source` to `target`. Upload absolute `paths` from the `preview_status` picker (`[]` cancels), or locate <input type=file>. Press one `key` with `modifiers` on the focused element. Scroll tab/located container; positive `deltaY` is down, `deltaX` right.",
     parameters: PreviewAutomationActInput,
     success: Schema.Union([
       Schema.Struct({ ...PreviewAutomationSelectResult.fields, ...presentationFields }),
@@ -175,7 +175,7 @@ export const PreviewEvaluateResult = Schema.Struct({
 const PreviewEvaluateTool = browserTool(
   Tool.make("preview_evaluate", {
     description:
-      "Run JavaScript in the page. It can change page state. Returns `{value}`, up to 64 KB. Needs your tab, or an unclaimed one. To read a tab the user drives, use `preview_snapshot`. Page tools reached here: read data only, never create, save, or display. Show results with `html_render`.",
+      "Run JavaScript in the page (may change state); returns `{value}` up to 64 KB. Use your or an unclaimed tab; for user-driven tabs, use `preview_snapshot`. Page tools are read-only: don't create, save, or display data. Show results with `html_render`.",
     parameters: PreviewAutomationEvaluateInput,
     success: PreviewEvaluateResult,
     failure: PreviewToolFailure,

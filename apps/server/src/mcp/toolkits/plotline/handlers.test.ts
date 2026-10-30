@@ -146,12 +146,13 @@ it.effect(
       const toolkit = yield* PlotlineToolkit;
       const verificationDescription =
         toolkit.tools.plotline_dag_record_verification.description ?? "";
-      expect(verificationDescription).toContain("at most 3 correction cycles by default");
       expect(verificationDescription).toContain(
-        "explicitly expected criteria version and run identity",
+        "explicit `expectedCriteriaVersion` and `expectedRunId`",
       );
-      expect(verificationDescription).toContain("does not independently rerun tests");
-      expect(verificationDescription).toContain("Cancellation or interruption ends the lifecycle");
+      expect(verificationDescription).toContain("same-content replays are idempotent");
+      expect(verificationDescription).toContain("Evidence is verifier-reported");
+      expect(verificationDescription).toContain("Max 3 correction cycles by default");
+      expect(verificationDescription).toContain("Cancellation/interruption ends corrections");
       const call = <Name extends keyof typeof toolkit.tools & string>(
         name: Name,
         input: Parameters<typeof toolkit.handle<Name>>[1],
