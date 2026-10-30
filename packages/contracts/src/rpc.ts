@@ -15,6 +15,25 @@ import {
   PlotlineDagSaveInput,
 } from "./plotlineDag.ts";
 import {
+  HarnessAuditListInput,
+  HarnessAuditListResult,
+  HarnessAnalyzeInput,
+  HarnessDecisionInput,
+  HarnessDefaults,
+  HarnessDefaultsGetInput,
+  HarnessDefaultsSetInput,
+  HarnessError,
+  HarnessInventoryListInput,
+  HarnessInventoryListResult,
+  HarnessProposal,
+  HarnessProposalCreateInput,
+  HarnessProposalEditInput,
+  HarnessProposalListInput,
+  HarnessProposalListResult,
+  HarnessProposalExport,
+  HarnessProposalOutcome,
+} from "./harness.ts";
+import {
   McpAppCallToolInput,
   McpAppCallToolResult,
   McpAppReadResourceInput,
@@ -538,6 +557,22 @@ export const WS_METHODS = {
   plotlineDagsSubscribe: "plotlineDags.subscribe",
   plotlineDagsSave: "plotlineDags.save",
   plotlineDagsDelete: "plotlineDags.delete",
+
+  harnessProposalsList: "harness.proposals.list",
+  harnessProposalsCreate: "harness.proposals.create",
+  harnessProposalsRevise: "harness.proposals.revise",
+  harnessProposalsApprove: "harness.proposals.approve",
+  harnessProposalsReject: "harness.proposals.reject",
+  harnessProposalsApply: "harness.proposals.apply",
+  harnessProposalsExport: "harness.proposals.export",
+  harnessProposalsOutcome: "harness.proposals.outcome",
+  harnessProposalsMarkImplementedExternally: "harness.proposals.markImplementedExternally",
+  harnessProposalsRollback: "harness.proposals.rollback",
+  harnessDefaultsGet: "harness.defaults.get",
+  harnessDefaultsSet: "harness.defaults.set",
+  harnessAuditList: "harness.audit.list",
+  harnessInventoryList: "harness.inventory.list",
+  harnessAnalyze: "harness.analysis.run",
 
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
   cloudInstallRelayClient: "cloud.installRelayClient",
@@ -1857,6 +1892,99 @@ const WsPlotlineDagsDeleteRpc = Rpc.make(WS_METHODS.plotlineDagsDelete, {
   error: Schema.Union([PlotlineDagError, EnvironmentAuthorizationError]),
 });
 
+const WsHarnessProposalsListRpc = Rpc.make(WS_METHODS.harnessProposalsList, {
+  payload: HarnessProposalListInput,
+  success: HarnessProposalListResult,
+  error: Schema.Union([HarnessError, EnvironmentAuthorizationError]),
+});
+
+const WsHarnessProposalsCreateRpc = Rpc.make(WS_METHODS.harnessProposalsCreate, {
+  payload: HarnessProposalCreateInput,
+  success: HarnessProposal,
+  error: Schema.Union([HarnessError, EnvironmentAuthorizationError]),
+});
+
+const WsHarnessProposalsReviseRpc = Rpc.make(WS_METHODS.harnessProposalsRevise, {
+  payload: HarnessProposalEditInput,
+  success: HarnessProposal,
+  error: Schema.Union([HarnessError, EnvironmentAuthorizationError]),
+});
+
+const WsHarnessProposalsApproveRpc = Rpc.make(WS_METHODS.harnessProposalsApprove, {
+  payload: HarnessDecisionInput,
+  success: HarnessProposal,
+  error: Schema.Union([HarnessError, EnvironmentAuthorizationError]),
+});
+
+const WsHarnessProposalsRejectRpc = Rpc.make(WS_METHODS.harnessProposalsReject, {
+  payload: HarnessDecisionInput,
+  success: HarnessProposal,
+  error: Schema.Union([HarnessError, EnvironmentAuthorizationError]),
+});
+
+const WsHarnessProposalsApplyRpc = Rpc.make(WS_METHODS.harnessProposalsApply, {
+  payload: HarnessDecisionInput,
+  success: HarnessProposal,
+  error: Schema.Union([HarnessError, EnvironmentAuthorizationError]),
+});
+
+const WsHarnessProposalsExportRpc = Rpc.make(WS_METHODS.harnessProposalsExport, {
+  payload: HarnessDecisionInput,
+  success: HarnessProposalExport,
+  error: Schema.Union([HarnessError, EnvironmentAuthorizationError]),
+});
+
+const WsHarnessProposalsOutcomeRpc = Rpc.make(WS_METHODS.harnessProposalsOutcome, {
+  payload: HarnessDecisionInput,
+  success: HarnessProposalOutcome,
+  error: Schema.Union([HarnessError, EnvironmentAuthorizationError]),
+});
+
+const WsHarnessProposalsMarkImplementedExternallyRpc = Rpc.make(
+  WS_METHODS.harnessProposalsMarkImplementedExternally,
+  {
+    payload: HarnessDecisionInput,
+    success: HarnessProposal,
+    error: Schema.Union([HarnessError, EnvironmentAuthorizationError]),
+  },
+);
+
+const WsHarnessProposalsRollbackRpc = Rpc.make(WS_METHODS.harnessProposalsRollback, {
+  payload: HarnessDecisionInput,
+  success: HarnessProposal,
+  error: Schema.Union([HarnessError, EnvironmentAuthorizationError]),
+});
+
+const WsHarnessDefaultsGetRpc = Rpc.make(WS_METHODS.harnessDefaultsGet, {
+  payload: HarnessDefaultsGetInput,
+  success: HarnessDefaults,
+  error: Schema.Union([HarnessError, EnvironmentAuthorizationError]),
+});
+
+const WsHarnessDefaultsSetRpc = Rpc.make(WS_METHODS.harnessDefaultsSet, {
+  payload: HarnessDefaultsSetInput,
+  success: HarnessDefaults,
+  error: Schema.Union([HarnessError, EnvironmentAuthorizationError]),
+});
+
+const WsHarnessAuditListRpc = Rpc.make(WS_METHODS.harnessAuditList, {
+  payload: HarnessAuditListInput,
+  success: HarnessAuditListResult,
+  error: Schema.Union([HarnessError, EnvironmentAuthorizationError]),
+});
+
+const WsHarnessInventoryListRpc = Rpc.make(WS_METHODS.harnessInventoryList, {
+  payload: HarnessInventoryListInput,
+  success: HarnessInventoryListResult,
+  error: Schema.Union([HarnessError, EnvironmentAuthorizationError]),
+});
+
+const WsHarnessAnalyzeRpc = Rpc.make(WS_METHODS.harnessAnalyze, {
+  payload: HarnessAnalyzeInput,
+  success: HarnessProposalListResult,
+  error: Schema.Union([HarnessError, EnvironmentAuthorizationError]),
+});
+
 const WsScheduledTasksSubscribeRpc = Rpc.make(WS_METHODS.scheduledTasksSubscribe, {
   payload: ScheduledTaskListInput,
   success: ScheduledTaskListResult,
@@ -2009,6 +2137,21 @@ export const WsRpcGroup = RpcGroup.make(
   WsPlotlineDagsSubscribeRpc,
   WsPlotlineDagsSaveRpc,
   WsPlotlineDagsDeleteRpc,
+  WsHarnessProposalsListRpc,
+  WsHarnessProposalsCreateRpc,
+  WsHarnessProposalsReviseRpc,
+  WsHarnessProposalsApproveRpc,
+  WsHarnessProposalsRejectRpc,
+  WsHarnessProposalsApplyRpc,
+  WsHarnessProposalsExportRpc,
+  WsHarnessProposalsOutcomeRpc,
+  WsHarnessProposalsMarkImplementedExternallyRpc,
+  WsHarnessProposalsRollbackRpc,
+  WsHarnessDefaultsGetRpc,
+  WsHarnessDefaultsSetRpc,
+  WsHarnessAuditListRpc,
+  WsHarnessInventoryListRpc,
+  WsHarnessAnalyzeRpc,
   WsScheduledTasksListRpc,
   WsScheduledTasksSubscribeRpc,
   WsScheduledTasksUpsertRpc,

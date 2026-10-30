@@ -2,6 +2,8 @@
 
 Replays small fake threads on Claude and Codex models and checks how they use T3's MCP tools: delegation, PR linking, previews, scheduling, and more. Each case reproduces a real mistake an agent made in T3 Code.
 
+The `plotline-*.ndjson` cases check that T3 DAG requests use native Plotline tools, explicit Markdown requests remain Markdown, failed verifications use T3's bounded correction path, missing DAG tools are reported honestly, and existing DAGs are updated in place.
+
 The model sees what it sees in T3 Code. A trimmed capture of a real harness turn supplies the harness prompt and native tools. T3's instructions, tool descriptions, and schemas come from this checkout. A cheap model plays the shell, so nothing runs on your machine.
 
 ## Run

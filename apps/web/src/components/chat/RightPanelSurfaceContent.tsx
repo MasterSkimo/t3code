@@ -2,6 +2,7 @@ import type {
   EditorId,
   EnvironmentId,
   PreviewAnnotationPayload,
+  PlotlineDag,
   ProjectId,
   ResolvedKeybindingsConfig,
   ScopedThreadRef,
@@ -31,6 +32,9 @@ const DevicePanel = lazy(() =>
   import("../device/DevicePanel").then((module) => ({ default: module.DevicePanel })),
 );
 const FilePreviewPanel = lazy(() => import("../files/FilePreviewPanel"));
+const PlotlineViewer = lazy(() =>
+  import("../plotline/PlotlineViewer").then((module) => ({ default: module.PlotlineViewer })),
+);
 
 export type RightPanelTerminalProps = Omit<
   PersistentThreadTerminalPanelProps,
@@ -62,6 +66,7 @@ export function RightPanelSurfaceContent(props: {
   readonly threadRef: ScopedThreadRef;
   readonly environmentId: EnvironmentId;
   readonly visible: boolean;
+  readonly maximized: boolean;
   readonly composerDraftTarget: ScopedThreadRef | DraftId;
   readonly keybindings: ResolvedKeybindingsConfig;
   readonly configuredPreviewUrls: ReadonlyArray<string>;
@@ -75,6 +80,8 @@ export function RightPanelSurfaceContent(props: {
   readonly terminal: RightPanelTerminalProps;
   readonly pullRequest: RightPanelPullRequestProps;
   readonly files: RightPanelFileProps;
+  readonly plotlineDags: ReadonlyArray<PlotlineDag>;
+  readonly onOpenThread: (threadId: string) => void;
 }) {
   const { surface, threadRef, visible } = props;
   if (surface === null) return null;
@@ -165,6 +172,54 @@ export function RightPanelSurfaceContent(props: {
     }
     case "pull-requests":
       return <ThreadPullRequestsPanel threadRef={threadRef} />;
+    case "plotline": {
+      const dag =
+        props.plotlineDags.find((candidate) => candidate.id === surface.dagId) ??
+        props.plotlineDags[0];
+      return dag ? (
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          {props.plotlineDags.length > 1 ? (
+            <div className="flex h-10 shrink-0 items-center gap-2 border-b px-3">
+              <label
+                className="shrink-0 text-xs font-medium text-muted-foreground"
+                htmlFor="plotline-dag-select"
+              >
+                Run
+              </label>
+              <select
+                id="plotline-dag-select"
+                aria-label="Select Plotline run"
+                className="min-w-0 flex-1 rounded-md border bg-background px-2 py-1 text-xs"
+                value={dag.id}
+                onChange={(event) =>
+                  useRightPanelStore.getState().openPlotline(threadRef, event.currentTarget.value)
+                }
+              >
+                {props.plotlineDags.map((candidate) => (
+                  <option key={candidate.id} value={candidate.id}>
+                    {candidate.title}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : null}
+          <div className="min-h-0 flex-1 overflow-hidden">
+            <Suspense fallback={null}>
+              <PlotlineViewer
+                key={dag.id}
+                dag={dag}
+                onOpenThread={props.onOpenThread}
+                maximized={props.maximized}
+              />
+            </Suspense>
+          </div>
+        </div>
+      ) : (
+        <div className="flex min-h-0 flex-1 items-center justify-center p-6 text-center text-sm text-muted-foreground">
+          No Plotline DAG is associated with this conversation yet.
+        </div>
+      );
+    }
     case "device":
       return (
         <Suspense fallback={null}>

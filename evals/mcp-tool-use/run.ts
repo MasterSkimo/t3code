@@ -44,6 +44,7 @@ import {
   CHILD_PULL_REQUEST_REPORT_NEXT,
   PullRequestsToolkit,
 } from "../../apps/server/src/mcp/toolkits/pullRequests/tools.ts";
+import { PlotlineToolkit } from "../../apps/server/src/mcp/toolkits/plotline/tools.ts";
 import { ThreadToolkit } from "../../apps/server/src/mcp/toolkits/thread/tools.ts";
 import { WorktreeToolkit } from "../../apps/server/src/mcp/toolkits/worktree/tools.ts";
 import {
@@ -184,6 +185,8 @@ export const McpToolUseCase = Schema.Struct({
     world: Schema.optional(McpToolUseWorld),
     /** Canned tool results by bare name, T3 or native. `"default"` uses the runner's result. */
     mocks: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+    /** T3 tools hidden from this sample, to model a capability the connected server lacks. */
+    unavailableTools: Schema.optional(Schema.Array(Schema.String)),
     /** Regexes on one part of a shell command. A match wins over the shell simulator. */
     shellMocks: Schema.optional(
       Schema.Array(Schema.Struct({ match: Schema.String, output: Schema.String })),
@@ -301,6 +304,7 @@ const t3SourceTools: ReadonlyArray<Tool.Any> = [
   PreviewToolkit,
   DeviceToolkit,
   HtmlToolkit,
+  PlotlineToolkit,
 ].flatMap((toolkit): ReadonlyArray<Tool.Any> => Object.values(toolkit.tools));
 const t3Tools: ReadonlyArray<ApiTool> = t3SourceTools.map((tool) => ({
   name: `${T3_PREFIX}${tool.name}`,
@@ -448,6 +452,29 @@ export const buildBase = (
 
 type Base = ReturnType<typeof buildBase> & { readonly codex?: typeof ResponsesRequest.Type };
 
+const hideT3Tools = (base: Base, unavailable: ReadonlyArray<string> = []): Base => {
+  if (unavailable.length === 0) return base;
+  const hidden = new Set(unavailable);
+  const t3 = base.t3.filter((tool) => !hidden.has(normalizeToolName(tool.name)));
+  const deferred = base.deferred.filter((tool) => !hidden.has(normalizeToolName(tool.name)));
+  const names = t3
+    .map((tool) => tool.name)
+    .toSorted()
+    .join("\n");
+  return {
+    ...base,
+    t3,
+    deferred,
+    system: base.system.map((block) => {
+      if (typeof block.text !== "string") return block;
+      return {
+        ...block,
+        text: block.text.replace(DEFERRED_LIST, (_match, header: string) => `${header}${names}\n`),
+      };
+    }),
+  };
+};
+
 /** Keep the captured harness prompt and tools; replace app-owned context and the real user. */
 const buildCodexBase = (
   template: typeof ResponsesRequest.Type,
@@ -589,6 +616,7 @@ type Sample = {
   readonly shellUsage: Usage;
   readonly linked: Set<string>;
   readonly codeStore: Record<string, unknown>;
+  readonly plotlineDags: Record<string, Record<string, unknown>>;
   nextTask: number;
 };
 
@@ -618,6 +646,15 @@ export const makeSample = (testCase: McpToolUseCase, base: Base): Sample => {
     shellUsage: emptyUsage(),
     linked: new Set([...urls, ...shell.flatMap(createdPullRequests)]),
     codeStore: {},
+    plotlineDags: Object.fromEntries(
+      priorCalls.flatMap(({ tool, result }) =>
+        ["plotline_dag_get", "plotline_dag_create"].includes(tool) &&
+        isRecord(result) &&
+        typeof result.id === "string"
+          ? [[result.id, result]]
+          : [],
+      ),
+    ),
     nextTask: Math.max(0, ...taskNumbers) + 1,
   };
 };
@@ -867,6 +904,79 @@ const t3Default = (sample: Sample, name: string, input: Readonly<Record<string, 
         title: null,
         loading: false,
       };
+    case "plotline_dag_create": {
+      const dagId = "dag-1";
+      const dag = {
+        id: dagId,
+        projectId: "project-1",
+        title: input.title,
+        description: input.description,
+        workspace: null,
+        state: "waiting",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        startedAt: null,
+        finishedAt: null,
+        tasks: [],
+        events: [],
+      };
+      sample.plotlineDags[dagId] = dag;
+      return dag;
+    }
+    case "plotline_dag_list":
+      return { dags: Object.values(sample.plotlineDags) };
+    case "plotline_dag_get":
+      return sample.plotlineDags[valueText(input.dagId)] ?? { error: "DAG not found" };
+    case "plotline_dag_add_tasks": {
+      const dag = sample.plotlineDags[valueText(input.dagId)];
+      if (!dag) return { error: "DAG not found" };
+      const tasks = Array.isArray(input.tasks) ? input.tasks : [];
+      const existing = Array.isArray(dag.tasks) ? dag.tasks : [];
+      dag.tasks = [
+        ...existing,
+        ...tasks.filter(isRecord).map((task) => ({
+          id: task.id,
+          title: task.title,
+          description: task.description,
+          effort: task.effort,
+          dependsOn: task.dependsOn ?? [],
+          state: "pending",
+          threadId: null,
+          runId: null,
+          legacySessionIds: [],
+          agent: null,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+          startedAt: null,
+          finishedAt: null,
+        })),
+      ];
+      return dag;
+    }
+    case "plotline_dag_update_task": {
+      const dag = sample.plotlineDags[valueText(input.dagId)];
+      if (!dag || !Array.isArray(dag.tasks)) return { error: "DAG or task not found" };
+      dag.tasks = dag.tasks.map((task) =>
+        isRecord(task) && task.id === input.taskId ? { ...task, ...input } : task,
+      );
+      return dag;
+    }
+    case "plotline_dag_add_event": {
+      const dag = sample.plotlineDags[valueText(input.dagId)];
+      if (!dag) return { error: "DAG not found" };
+      const events = Array.isArray(dag.events) ? dag.events : [];
+      dag.events = [
+        ...events,
+        {
+          id: `event-${events.length + 1}`,
+          at: "2026-01-01T00:00:00.000Z",
+          level: input.level ?? "info",
+          message: input.message,
+          taskId: input.taskId ?? null,
+        },
+      ];
+      return dag;
+    }
     default:
       return { ok: true };
   }
@@ -1734,7 +1844,10 @@ const main = Effect.gen(function* () {
   const base = yield* buildFor(false);
   const childBase = yield* buildFor(true);
   const baseFor = (testCase: McpToolUseCase) =>
-    testCase.setup.role === "delegated-child" ? childBase : base;
+    hideT3Tools(
+      testCase.setup.role === "delegated-child" ? childBase : base,
+      testCase.setup.unavailableTools,
+    );
   const effort = flags.effort ?? base.codex?.reasoning.effort ?? "high";
   if (flags["dry-run"]) {
     // One JSON line per case. Without --case this also checks that every case builds.

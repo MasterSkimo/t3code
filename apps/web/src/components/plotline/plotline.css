@@ -1,0 +1,709 @@
+.plotline-viewer {
+  --pl-paper: #f2f0e9;
+  --pl-white: #fbfaf6;
+  --pl-ink: #1c2828;
+  --pl-muted: #78817c;
+  --pl-rule: #d9d8ce;
+  --pl-green: #377663;
+  --pl-green-wash: #e3eee7;
+  --pl-orange: #c75e45;
+  --pl-gold: #ae7934;
+  --pl-blue: #577f9c;
+  --pl-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  min-height: 0;
+  padding: 0 22px 22px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  color: var(--pl-ink);
+  background: var(--pl-paper);
+  font:
+    14px/1.4 Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    sans-serif;
+  container-name: plotline;
+  container-type: inline-size;
+}
+.plotline-viewer *,
+.plotline-viewer *::before,
+.plotline-viewer *::after {
+  box-sizing: border-box;
+}
+.plotline-viewer button {
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.plotline-topline {
+  height: 48px;
+  border-bottom: 1px solid var(--pl-rule);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.plotline-crumb {
+  min-width: 0;
+  padding-right: 12px;
+  overflow: hidden;
+  color: #7d857e;
+  font: 10px var(--pl-mono);
+  letter-spacing: 0.08em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.plotline-crumb strong {
+  color: #3e4b46;
+  font-weight: 500;
+}
+.plotline-top-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+.plotline-live {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #64756d;
+  font: 9px var(--pl-mono);
+  letter-spacing: 0.08em;
+}
+.plotline-live i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #4d9979;
+}
+.plotline-live i.paused {
+  background: #c99c59;
+}
+.plotline-pause {
+  width: 29px;
+  height: 29px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #c9c9be;
+  border-radius: 50%;
+  background: #f8f6ef;
+  color: #67716c;
+}
+.plotline-pause:hover,
+.plotline-tool:hover {
+  background: #eeede6;
+}
+.plotline-viewer button:focus-visible {
+  outline: 2px solid #7a9d88;
+  outline-offset: 2px;
+}
+.plotline-page-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 22px 0 17px;
+}
+.plotline-kicker {
+  margin-bottom: 8px;
+  color: #8c7768;
+  font: 9px var(--pl-mono);
+  letter-spacing: 0.16em;
+}
+.plotline-page-head h1 {
+  margin: 0;
+  font-size: 25px;
+  font-weight: 580;
+  letter-spacing: -0.045em;
+  line-height: 1.05;
+  overflow-wrap: anywhere;
+}
+.plotline-subhead {
+  max-width: 80ch;
+  margin-top: 7px;
+  color: #778079;
+  font-size: 11px;
+}
+.plotline-read-only {
+  padding: 7px 12px;
+  border: 1px solid #d2d0c6;
+  border-radius: 999px;
+  color: #707a73;
+  font: 9px var(--pl-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.plotline-runbar {
+  display: grid;
+  grid-template-columns: 1.05fr 0.95fr 0.8fr 1.15fr 1.45fr;
+  align-items: center;
+  min-height: 62px;
+  margin-bottom: 16px;
+  border-top: 1px solid var(--pl-rule);
+  border-bottom: 1px solid var(--pl-rule);
+}
+.plotline-run-meta {
+  min-width: 0;
+  padding: 10px 12px 10px 0;
+  border-right: 1px solid var(--pl-rule);
+}
+.plotline-run-meta + .plotline-run-meta {
+  padding-left: 12px;
+}
+.plotline-run-meta:last-child {
+  border: 0;
+}
+.plotline-meta-label {
+  color: #8a9189;
+  font: 9px var(--pl-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.plotline-meta-value {
+  margin-top: 5px;
+  overflow: hidden;
+  color: #3e4944;
+  font: 10px var(--pl-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.plotline-progress-meta {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.plotline-progress-track {
+  min-width: 30px;
+  height: 3px;
+  flex: 1;
+  background: #dddcd2;
+}
+.plotline-progress-track span {
+  display: block;
+  height: 100%;
+  background: var(--pl-orange);
+  transition: width 0.5s;
+}
+.plotline-progress-text {
+  color: #394640;
+  font: 10px var(--pl-mono);
+  white-space: nowrap;
+}
+.plotline-canvas-shell {
+  overflow: hidden;
+  border: 1px solid #e3e1d8;
+  border-radius: 21px;
+  background: var(--pl-white);
+  box-shadow: 0 8px 24px #25342a08;
+}
+.plotline-canvas-top {
+  height: 43px;
+  padding: 0 14px;
+  border-bottom: 1px solid #e3e2d9;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.plotline-canvas-caption {
+  color: #717b73;
+  font: 9px var(--pl-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.plotline-canvas-caption span {
+  margin-left: 9px;
+  color: #a4a99e;
+  letter-spacing: 0.04em;
+}
+.plotline-tools {
+  display: flex;
+  gap: 5px;
+}
+.plotline-tool {
+  min-width: 29px;
+  height: 27px;
+  padding: 0 8px;
+  border: 1px solid #e3e1d7;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  background: #f8f7f1;
+  color: #717a73;
+  font: 10px var(--pl-mono);
+}
+.plotline-map-viewport {
+  position: relative;
+  height: 500px;
+  overflow: auto;
+  background-color: var(--pl-white);
+  background-image: radial-gradient(#dcded5 0.8px, transparent 0.9px);
+  background-size: 19px 19px;
+}
+.plotline-map {
+  position: relative;
+  margin: 0 auto;
+  transform-origin: top center;
+}
+.plotline-wires {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.plotline-wire {
+  fill: none;
+  stroke: #c5ccc2;
+  stroke-width: 1.7px;
+  stroke-linecap: round;
+}
+.plotline-wire.done {
+  stroke: #83ad95;
+}
+.plotline-wire.live {
+  stroke: #d58a6d;
+  stroke-dasharray: 4 5;
+  animation: plotline-dash 1.3s linear infinite;
+}
+.plotline-wire.failed {
+  stroke: #c86c61;
+}
+.plotline-node {
+  position: absolute;
+  z-index: 2;
+  width: 196px;
+  height: 100px;
+  padding: 10px 12px 9px;
+  overflow: hidden;
+  border: 1px solid #e3e2d9;
+  border-radius: 15px;
+  background: #fffefa;
+  box-shadow:
+    0 5px 16px #26382b0d,
+    0 1px 2px #26382b0b;
+  text-align: left;
+  transition:
+    border 0.18s,
+    box-shadow 0.18s,
+    transform 0.18s;
+}
+.plotline-node:hover {
+  transform: translateY(-2px);
+  border-color: #a2b4a7;
+  box-shadow: 0 8px 20px #26382b15;
+}
+.plotline-node.selected {
+  border-color: #7a9d88;
+  box-shadow:
+    0 0 0 3px #7a9d881d,
+    0 8px 20px #26382b12;
+}
+.plotline-node.running {
+  padding-left: 9px;
+  border-left: 4px solid #dc8b6c;
+}
+.plotline-node.done {
+  padding-left: 9px;
+  border-left: 4px solid #78a48c;
+}
+.plotline-node.error {
+  padding-left: 9px;
+  border-left: 4px solid #cd786d;
+}
+.plotline-node.skipped {
+  padding-left: 9px;
+  border-left: 4px solid #b9bdb4;
+  opacity: 0.82;
+}
+.plotline-node-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 5px;
+}
+.plotline-node-name {
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 640;
+  letter-spacing: -0.01em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.plotline-node-state {
+  flex-shrink: 0;
+  padding: 4px 6px;
+  border-radius: 999px;
+  background: #f1f1eb;
+  color: #788078;
+  font: 7px var(--pl-mono);
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+.plotline-node.running .plotline-node-state {
+  background: #f7eae4;
+  color: #ad654e;
+}
+.plotline-node.done .plotline-node-state {
+  background: #e8f0e9;
+  color: #477a63;
+}
+.plotline-node.error .plotline-node-state {
+  background: #f7eae7;
+  color: #b65f56;
+}
+.plotline-node-desc {
+  margin-top: 4px;
+  overflow: hidden;
+  color: #818981;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.plotline-node-effort {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 6px;
+}
+.plotline-effort-label {
+  color: #9aa198;
+  font: 7px var(--pl-mono);
+  letter-spacing: 0.08em;
+}
+.plotline-effort-dots {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.plotline-effort-dots i {
+  display: block;
+  width: 4px;
+  height: 4px;
+  border: 1px solid #bfc6bc;
+  border-radius: 50%;
+}
+.plotline-effort-dots i.on {
+  border-color: #d58a6d;
+  background: #d58a6d;
+}
+.plotline-effort-level {
+  color: #7b8580;
+  font: 8px var(--pl-mono);
+}
+.plotline-node-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 5px;
+  margin-top: 6px;
+  padding-top: 5px;
+  overflow: hidden;
+  border-top: 1px solid #eeede6;
+  color: #818981;
+  font: 8px var(--pl-mono);
+  white-space: nowrap;
+}
+.plotline-unavailable {
+  color: #9ba097;
+  font-style: italic;
+}
+.plotline-map-key {
+  height: 34px;
+  padding: 0 16px;
+  overflow-x: auto;
+  border-top: 1px solid #eeede6;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  color: #7d857e;
+  font: 8px var(--pl-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.plotline-key {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.plotline-key i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #9aa29a;
+}
+.plotline-key .kdone {
+  background: var(--pl-green);
+}
+.plotline-key .krun {
+  background: var(--pl-orange);
+}
+.plotline-key .kwait {
+  background: #c69b5d;
+}
+.plotline-key .kerror {
+  background: #c65d55;
+}
+.plotline-key .kskip {
+  background: #b9bdb4;
+}
+.plotline-empty-state {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  padding: 24px;
+  display: grid;
+  place-items: center;
+  background: #fbfaf6ee;
+  text-align: center;
+}
+.plotline-empty-mark {
+  width: 38px;
+  height: 38px;
+  margin: 0 auto 12px;
+  border: 1px solid #b9c6bb;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: #c17753;
+  font: 700 12px var(--pl-mono);
+}
+.plotline-empty-state h2 {
+  margin: 0 0 6px;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.plotline-empty-state p {
+  max-width: 42ch;
+  margin: 0 auto;
+  color: #778079;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.plotline-under {
+  display: grid;
+  grid-template-columns: 1.35fr 1fr;
+  gap: 22px;
+  margin-top: 20px;
+}
+.plotline-section-head {
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--pl-rule);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.plotline-section-title {
+  font-size: 11px;
+  font-weight: 640;
+  letter-spacing: 0.01em;
+}
+.plotline-section-side {
+  color: #8b938b;
+  font: 9px var(--pl-mono);
+}
+.plotline-event-list {
+  padding-top: 3px;
+}
+.plotline-event {
+  min-height: 32px;
+  padding: 8px 0;
+  border-bottom: 1px solid #e7e6de;
+  display: grid;
+  grid-template-columns: 48px 8px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 9px;
+  color: #69736c;
+  font-size: 10px;
+}
+.plotline-event:last-child {
+  border: 0;
+}
+.plotline-event-time {
+  color: #959c93;
+  font: 8px var(--pl-mono);
+}
+.plotline-event-dot {
+  align-self: center;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--pl-green);
+}
+.plotline-event-dot.live {
+  background: var(--pl-orange);
+}
+.plotline-event-dot.error {
+  background: #c65d55;
+}
+.plotline-event-dot.info {
+  background: #8b938b;
+}
+.plotline-event strong {
+  color: #3c4942;
+  font-weight: 600;
+}
+.plotline-event-empty,
+.plotline-inspect-empty {
+  padding: 13px 0;
+  color: #8b938b;
+  font-size: 10px;
+  line-height: 1.6;
+}
+.plotline-inspect {
+  padding-top: 10px;
+}
+.plotline-inspect-name {
+  margin: 1px 0 4px;
+  font-size: 16px;
+  font-weight: 580;
+  letter-spacing: -0.025em;
+}
+.plotline-inspect-desc {
+  margin-bottom: 12px;
+  color: #78817a;
+  font-size: 10px;
+}
+.plotline-inspect-grid {
+  border-top: 1px solid #e7e6de;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+.plotline-inspect-cell {
+  min-width: 0;
+  padding: 8px 9px 7px 0;
+  border-bottom: 1px solid #e2e1d8;
+}
+.plotline-inspect-label,
+.plotline-sessions-title {
+  color: #92998f;
+  font: 8px var(--pl-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.plotline-inspect-val {
+  margin-top: 3px;
+  color: #414c46;
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+.plotline-inspect-val em {
+  color: #8b938b;
+}
+.plotline-sessions {
+  margin-top: 10px;
+}
+.plotline-sessions-title {
+  margin-bottom: 5px;
+}
+.plotline-thread-link {
+  width: 100%;
+  padding: 7px 0;
+  border-bottom: 1px solid #e7e6de;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: transparent;
+  color: #3e4944;
+  font: 9px var(--pl-mono) !important;
+  text-align: left;
+}
+.plotline-thread-link span {
+  overflow-wrap: anywhere;
+}
+.plotline-footnote {
+  margin-top: 15px;
+  color: #9ba097;
+  font: 8px var(--pl-mono);
+  letter-spacing: 0.05em;
+  text-align: right;
+  text-transform: uppercase;
+}
+.plotline-viewer-maximized {
+  padding-right: 34px;
+  padding-left: 34px;
+}
+.plotline-viewer-maximized .plotline-map-viewport {
+  height: min(62vh, 720px);
+}
+.plotline-viewer-maximized .plotline-page-head h1 {
+  font-size: 27px;
+}
+@keyframes plotline-dash {
+  to {
+    stroke-dashoffset: -9;
+  }
+}
+@media (max-width: 1150px) {
+  .plotline-runbar {
+    grid-template-columns: 1fr 1fr 0.8fr 1.1fr 1.4fr;
+  }
+  .plotline-page-head h1 {
+    font-size: 23px;
+  }
+}
+@container plotline (max-width: 900px) {
+  .plotline-viewer,
+  .plotline-viewer-maximized {
+    padding: 0 14px 22px;
+  }
+  .plotline-runbar {
+    grid-template-columns: 1fr 1fr;
+    min-height: 0;
+  }
+  .plotline-run-meta {
+    padding: 10px 12px 10px 0;
+    border-bottom: 1px solid var(--pl-rule);
+  }
+  .plotline-run-meta + .plotline-run-meta {
+    padding-left: 12px;
+  }
+  .plotline-run-meta:nth-child(2n) {
+    border-right: 0;
+  }
+  .plotline-run-meta:last-child {
+    border-bottom: 0;
+  }
+  .plotline-under {
+    grid-template-columns: 1fr;
+  }
+  .plotline-page-head {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  .plotline-map-viewport {
+    height: 420px;
+  }
+}
+@container plotline (max-width: 520px) {
+  .plotline-viewer,
+  .plotline-viewer-maximized {
+    padding-right: 9px;
+    padding-left: 9px;
+  }
+  .plotline-runbar {
+    grid-template-columns: 1fr 1fr;
+  }
+  .plotline-canvas-caption span {
+    display: block;
+    margin: 4px 0 0;
+  }
+  .plotline-canvas-top {
+    height: 50px;
+  }
+  .plotline-map-viewport {
+    height: 390px;
+  }
+}

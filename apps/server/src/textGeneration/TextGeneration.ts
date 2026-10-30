@@ -2,8 +2,12 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import type { ProviderInstanceId } from "@t3tools/contracts";
-import type { ProviderTextGeneration } from "@t3tools/provider-core/server/textGeneration";
+import type {
+  ProviderTextGeneration,
+  StructuredTextGenerationInput,
+} from "@t3tools/provider-core/server/textGeneration";
 import { TextGenerationError } from "@t3tools/contracts";
+import type * as Schema from "effect/Schema";
 
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
@@ -32,7 +36,21 @@ type TextGenerationOp =
   | "generatePrContent"
   | "generateBranchName"
   | "generateThreadTitle"
-  | "generateReviewGuide";
+  | "generateReviewGuide"
+  | "generateStructuredOutput";
+
+export const runStructuredOutput = <S extends Schema.Top>(
+  textGeneration: ProviderInstance["textGeneration"],
+  input: StructuredTextGenerationInput<S>,
+): Effect.Effect<S["Type"], TextGenerationError, S["DecodingServices"]> =>
+  textGeneration.supportsStructuredOutput === true
+    ? textGeneration.generateStructuredOutput(input)
+    : Effect.fail(
+        new TextGenerationError({
+          operation: "generateStructuredOutput",
+          detail: "The selected provider does not support structured output.",
+        }),
+      );
 
 const resolveInstance = (
   registry: ProviderInstanceRegistry.ProviderInstanceRegistry["Service"],
@@ -79,6 +97,15 @@ export const make = Effect.gen(function* () {
         Effect.flatMap((textGeneration) => textGeneration.generateReviewGuide(input)),
       );
     }),
+    generateStructuredOutput: Effect.fn("TextGeneration.generateStructuredOutput")(
+      function (input) {
+        return resolveInstance(
+          registry,
+          "generateStructuredOutput",
+          input.modelSelection.instanceId,
+        ).pipe(Effect.flatMap((textGeneration) => runStructuredOutput(textGeneration, input)));
+      },
+    ),
     generateThreadTitle: Effect.fn("TextGeneration.generateThreadTitle")(function (input) {
       return resolveInstance(registry, "generateThreadTitle", input.modelSelection.instanceId).pipe(
         Effect.flatMap((textGeneration) =>

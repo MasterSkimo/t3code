@@ -1270,6 +1270,31 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:plotline-dags:live",
       tag: WS_METHODS.plotlineDagsSubscribe,
     }),
+    harnessProposals: createEnvironmentQueryAtomFamily(runtime, {
+      label: "environment-data:server:harness:proposals",
+      execute: (input: EnvironmentRpcInput<typeof WS_METHODS.harnessProposalsList>) =>
+        requestGuarded(WS_METHODS.harnessProposalsList, input),
+    }),
+    harnessProposalOutcome: createEnvironmentQueryAtomFamily(runtime, {
+      label: "environment-data:server:harness:proposal:outcome",
+      execute: (input: EnvironmentRpcInput<typeof WS_METHODS.harnessProposalsOutcome>) =>
+        requestGuarded(WS_METHODS.harnessProposalsOutcome, input),
+    }),
+    harnessDefaults: createEnvironmentQueryAtomFamily(runtime, {
+      label: "environment-data:server:harness:defaults",
+      execute: (input: EnvironmentRpcInput<typeof WS_METHODS.harnessDefaultsGet>) =>
+        requestGuarded(WS_METHODS.harnessDefaultsGet, input),
+    }),
+    harnessAudit: createEnvironmentQueryAtomFamily(runtime, {
+      label: "environment-data:server:harness:audit",
+      execute: (input: EnvironmentRpcInput<typeof WS_METHODS.harnessAuditList>) =>
+        requestGuarded(WS_METHODS.harnessAuditList, input),
+    }),
+    harnessInventory: createEnvironmentQueryAtomFamily(runtime, {
+      label: "environment-data:server:harness:inventory",
+      execute: (input: EnvironmentRpcInput<typeof WS_METHODS.harnessInventoryList>) =>
+        requestGuarded(WS_METHODS.harnessInventoryList, input),
+    }),
     // A cold transcript scan is measured in seconds, so keep the result around
     // long enough that switching windows or re-rendering does not rescan.
     usageSummary: createEnvironmentRpcQueryAtomFamily(runtime, {
@@ -1496,6 +1521,52 @@ export function createServerEnvironmentAtoms<R, E>(
     deletePlotlineDag: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:plotline-dag:delete",
       tag: WS_METHODS.plotlineDagsDelete,
+    }),
+    createHarnessProposal: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:harness:proposal:create",
+      tag: WS_METHODS.harnessProposalsCreate,
+    }),
+    reviseHarnessProposal: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:harness:proposal:revise",
+      tag: WS_METHODS.harnessProposalsRevise,
+    }),
+    approveHarnessProposal: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:harness:proposal:approve",
+      tag: WS_METHODS.harnessProposalsApprove,
+    }),
+    rejectHarnessProposal: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:harness:proposal:reject",
+      tag: WS_METHODS.harnessProposalsReject,
+    }),
+    applyHarnessProposal: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:harness:proposal:apply",
+      tag: WS_METHODS.harnessProposalsApply,
+    }),
+    exportHarnessProposal: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:harness:proposal:export",
+      tag: WS_METHODS.harnessProposalsExport,
+    }),
+    evaluateHarnessProposal: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:harness:proposal:evaluate",
+      tag: WS_METHODS.harnessProposalsOutcome,
+    }),
+    markHarnessProposalImplementedExternally: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:harness:proposal:mark-implemented-externally",
+      tag: WS_METHODS.harnessProposalsMarkImplementedExternally,
+    }),
+    rollbackHarnessProposal: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:harness:proposal:rollback",
+      tag: WS_METHODS.harnessProposalsRollback,
+    }),
+    analyzeHarness: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:harness:analysis:run",
+      tag: WS_METHODS.harnessAnalyze,
+    }),
+    setHarnessDefaults: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:harness:defaults:set",
+      tag: WS_METHODS.harnessDefaultsSet,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
     }),
     setScheduledTaskEnabled: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:scheduled-task:set-enabled",

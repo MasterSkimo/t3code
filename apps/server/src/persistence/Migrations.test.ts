@@ -75,6 +75,25 @@ describe("runMigrations", () => {
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
+  it.effect(
+    "fails explicitly on malformed Plotline data without marking the migration applied",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* runMigrations({ toMigrationInclusive: 74 });
+        yield* sql`INSERT INTO plotline_dags (dag_id, project_id, payload_json, updated_at)
+        VALUES ('dag:broken', 'project:test', '{not-json', '2026-01-01T00:00:00.000Z')`;
+        const exit = yield* Effect.exit(runMigrations());
+        assert.isTrue(Exit.isFailure(exit));
+        assert.include(String(exit), "dag:broken");
+        assert.isFalse((yield* history).some(([id]) => id === 75));
+        const rows = yield* sql<{
+          readonly payload_json: string;
+        }>`SELECT payload_json FROM plotline_dags WHERE dag_id = 'dag:broken'`;
+        assert.strictEqual(rows[0]?.payload_json, "{not-json");
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
   it.effect.each([30, 54])("still starts with a site-local migration at id %s", (id) =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;

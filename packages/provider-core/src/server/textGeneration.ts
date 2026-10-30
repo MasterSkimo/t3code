@@ -6,6 +6,7 @@ import type {
   TextGenerationError,
 } from "@t3tools/contracts";
 import type * as Effect from "effect/Effect";
+import type * as Schema from "effect/Schema";
 
 import type { TextGenerationPolicy } from "./textGenerationPolicy.ts";
 import type { ThreadTitleForkSource } from "./textGenerationPrompts.ts";
@@ -92,12 +93,30 @@ export interface ReviewGuideGenerationInput {
   modelSelection: ModelSelection;
 }
 
+export interface StructuredTextGenerationInput<S extends Schema.Top> {
+  readonly cwd: string;
+  readonly prompt: string;
+  readonly outputSchema: S;
+  readonly modelSelection: ModelSelection;
+}
+
 export type ReviewGuideGenerationResult = Omit<
   PullRequestReviewGuide,
   "headSha" | "generatedAt" | "modelSelection"
 >;
 
+export type ProviderTextGenerationOperation =
+  | "generateCommitMessage"
+  | "generatePrContent"
+  | "generateBranchName"
+  | "generateThreadTitle"
+  | "generateReviewGuide"
+  | "generateStructuredOutput";
+
 export interface ProviderTextGeneration {
+  /** Structured output is opt-in because some providers expose only orchestration, not app inference. */
+  readonly supportsStructuredOutput?: boolean;
+
   readonly generateCommitMessage: (
     input: CommitMessageGenerationInput,
   ) => Effect.Effect<CommitMessageGenerationResult, TextGenerationError>;
@@ -117,4 +136,8 @@ export interface ProviderTextGeneration {
   readonly generateReviewGuide: (
     input: ReviewGuideGenerationInput,
   ) => Effect.Effect<ReviewGuideGenerationResult, TextGenerationError>;
+
+  readonly generateStructuredOutput: <S extends Schema.Top>(
+    input: StructuredTextGenerationInput<S>,
+  ) => Effect.Effect<S["Type"], TextGenerationError, S["DecodingServices"]>;
 }

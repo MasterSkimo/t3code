@@ -37,6 +37,7 @@ import { useLogicalProjectEnvironments } from "../hooks/useLogicalProjectEnviron
 import { useStableCallback } from "../hooks/useStableCallback";
 import { useProjectScriptEditing } from "./chat/useProjectScriptEditing";
 import { RightPanelSurfaceContent } from "./chat/RightPanelSurfaceContent";
+import { plotlineDagsForThread } from "./chat/plotlineAssociation";
 import { usePendingThreadRequests } from "./chat/usePendingThreadRequests";
 import { isScratchProject } from "@t3tools/client-runtime/state/projects";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
@@ -61,6 +62,7 @@ import {
   isProviderNativeSubagentThread,
   type EnvironmentId,
   type MessageId,
+  type PlotlineDag,
   type ModelSelection,
   type PreviewAnnotationPayload,
   ProviderInstanceId,
@@ -895,6 +897,31 @@ export default function ChatView(props: ChatViewProps) {
   })();
   const activeThreadRef = useActiveThreadRef(activeThread);
   const activeThreadKey = activeThreadRef ? scopedThreadKey(activeThreadRef) : null;
+  const plotlineDagsQuery = useEnvironmentQuery(
+    activeThreadRef
+      ? serverEnvironment.plotlineDagsLive({
+          environmentId: activeThreadRef.environmentId,
+          input: {},
+        })
+      : null,
+  );
+  const conversationPlotlineDags: ReadonlyArray<PlotlineDag> = activeThreadRef
+    ? plotlineDagsForThread(plotlineDagsQuery.data?.dags ?? [], activeThreadRef.threadId)
+    : [];
+  const plotlineAutoOpenConsideredThreads = useRef(new Set<string>());
+  useEffect(() => {
+    if (!activeThreadRef || conversationPlotlineDags.length === 0) return;
+    const threadKey = scopedThreadKey(activeThreadRef);
+    if (plotlineAutoOpenConsideredThreads.current.has(threadKey)) return;
+    plotlineAutoOpenConsideredThreads.current.add(threadKey);
+    const panelState = selectThreadRightPanelState(
+      useRightPanelStore.getState().byThreadKey,
+      activeThreadRef,
+    );
+    // Respect any panel the user already opened, including a hidden but retained tab.
+    if (panelState.surfaces.length > 0) return;
+    useRightPanelStore.getState().openPlotline(activeThreadRef, conversationPlotlineDags[0]?.id);
+  }, [activeThreadRef, conversationPlotlineDags]);
   const activeEnvironmentServerBrowser = useEnvironmentSupportsServerBrowser(
     activeThreadRef?.environmentId ?? null,
   );
@@ -2284,6 +2311,7 @@ export default function ChatView(props: ChatViewProps) {
     addFilesSurfaceStable,
     addPullRequestSurfaceStable,
     addPullRequestsSurfaceStable,
+    addPlotlineSurfaceStable,
     closePreviewPanelStable,
     copyRightPanelFilePathStable,
     createBrowserSurface,
@@ -3034,6 +3062,7 @@ export default function ChatView(props: ChatViewProps) {
       threadRef={activeThreadRef}
       environmentId={activeThread.environmentId}
       visible={rightPanelOpen}
+      maximized={rightPanelMaximized}
       composerDraftTarget={composerDraftTarget}
       keybindings={keybindings}
       configuredPreviewUrls={configuredPreviewUrls}
@@ -3041,6 +3070,14 @@ export default function ChatView(props: ChatViewProps) {
       getShortcutContext={getShortcutContextStable}
       onSendAnnotation={sendPreviewAnnotationStable}
       onCloseSurface={closeRightPanelSurface}
+      plotlineDags={conversationPlotlineDags}
+      onOpenThread={(threadId) => {
+        if (!activeThreadRef) return;
+        void navigate({
+          to: "/$environmentId/$threadId",
+          params: { environmentId: activeThreadRef.environmentId, threadId },
+        });
+      }}
       terminal={{
         launchContext: activeTerminalLaunchContext ?? null,
         keybindings,
@@ -3794,6 +3831,7 @@ export default function ChatView(props: ChatViewProps) {
           onAddFiles={addFilesSurfaceStable}
           onAddPullRequest={addPullRequestSurfaceStable}
           onAddPullRequests={addPullRequestsSurfaceStable}
+          onAddPlotline={addPlotlineSurfaceStable}
           onAddDevice={addDeviceSurfaceStable}
           browserAvailable={canOperatePreview && browserAvailable}
           terminalAvailable={activeProject !== null && canOperateTerminal}
@@ -3801,6 +3839,18 @@ export default function ChatView(props: ChatViewProps) {
           filesAvailable={activeProject !== null}
           pullRequestAvailable={pullRequestSurfaceAvailable}
           pullRequestsAvailable={pullRequestsSurfaceAvailable}
+          plotlineAvailable={conversationPlotlineDags.length > 0}
+          plotlineState={
+            conversationPlotlineDags.find(
+              (dag) =>
+                dag.id ===
+                (activeRightPanelSurface?.kind === "plotline"
+                  ? activeRightPanelSurface.dagId
+                  : undefined),
+            )?.state ??
+            conversationPlotlineDags[0]?.state ??
+            null
+          }
           deviceAvailable={activeThreadRef !== null}
         >
           {rightPanelContent}

@@ -21,6 +21,7 @@ const RIGHT_PANEL_KINDS = [
   "terminal",
   "pull-request",
   "pull-requests",
+  "plotline",
 ] as const;
 export type RightPanelKind = (typeof RIGHT_PANEL_KINDS)[number];
 
@@ -74,7 +75,8 @@ export type RightPanelSurface =
       url?: string;
       detailTab?: PullRequestDetailTab;
     }
-  | { id: "pull-requests"; kind: "pull-requests" };
+  | { id: "pull-requests"; kind: "pull-requests" }
+  | { id: "plotline"; kind: "plotline"; dagId?: string };
 
 const RIGHT_PANEL_STORAGE_KEY = "t3code:right-panel-state:v2";
 const RIGHT_PANEL_STORAGE_VERSION = 14;
@@ -147,6 +149,7 @@ interface RightPanelStoreState {
       detailTab?: PullRequestDetailTab;
     },
   ) => void;
+  openPlotline: (ref: ScopedThreadRef, dagId?: string) => void;
   setPullRequestDetailTab: (
     ref: ScopedThreadRef,
     surfaceId: string,
@@ -211,6 +214,8 @@ const singletonSurface = (
       return { id: "files", kind };
     case "pull-requests":
       return { id: "pull-requests", kind };
+    case "plotline":
+      return { id: "plotline", kind };
     case "device":
       return { id: "device", kind };
   }
@@ -707,6 +712,29 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
                   ),
                 }
               : next;
+          }),
+        ),
+      openPlotline: (ref, dagId) =>
+        set((state) =>
+          userAction(state, scopedThreadKey(ref), (current) => {
+            const existing = current.surfaces.find(
+              (surface): surface is Extract<RightPanelSurface, { kind: "plotline" }> =>
+                surface.kind === "plotline",
+            );
+            const surface: RightPanelSurface = {
+              id: "plotline",
+              kind: "plotline",
+              ...(dagId ? { dagId } : existing?.dagId ? { dagId: existing.dagId } : {}),
+            };
+            const withUpdatedSurface = existing
+              ? {
+                  ...current,
+                  surfaces: current.surfaces.map((entry) =>
+                    entry.id === surface.id ? surface : entry,
+                  ),
+                }
+              : current;
+            return upsertSurface(withUpdatedSurface, surface);
           }),
         ),
       setPullRequestDetailTab: (ref, surfaceId, detailTab) =>

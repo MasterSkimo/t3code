@@ -23,6 +23,8 @@ import { ThreadLaunchService } from "../orchestration-v2/ThreadLaunchService.ts"
 import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
 import { ThreadSearch } from "../orchestration-v2/ThreadSearch.ts";
 import { PreviewManager } from "../preview/Manager.ts";
+import * as PlotlineDagService from "../plotline/PlotlineDagService.ts";
+import * as HarnessEvents from "../harness/events.ts";
 import { PreviewBrowser } from "../preview/PreviewBrowser.ts";
 import { ManagedProjectFolders } from "../project/ManagedProjectFolders.ts";
 import { ProjectService } from "../project/ProjectService.ts";
@@ -42,6 +44,8 @@ import budget from "./agentContextBudget.json" with { type: "json" };
 // Registration only stores tool definitions, so the handlers' services are never called.
 const toolHandlerServices = Layer.mergeAll(
   Layer.mock(DeviceService)({}),
+  Layer.mock(PlotlineDagService.PlotlineDagService)({}),
+  Layer.mock(HarnessEvents.HarnessSignificantEventStore)({ snapshot: () => [] }),
   Layer.mock(DocumentText)({}),
   Layer.mock(GitVcsDriver)({}),
   Layer.mock(GitWorkflowService)({}),

@@ -1,4 +1,4 @@
-import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
+import { HarnessError, OrchestrationDispatchCommandError } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
@@ -122,6 +122,9 @@ import * as DocumentText from "./provider/DocumentText.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
 import * as PlotlineDags from "./plotline/PlotlineDagService.ts";
+import * as HarnessProposals from "./harness/HarnessProposalService.ts";
+import * as HarnessAnalysis from "./harness/HarnessAnalysisService.ts";
+import { proposalImplementationTime, summarizeProposalOutcome } from "./harness/proposalOutcome.ts";
 import * as SecretRequests from "./secrets/SecretRequests.ts";
 import * as GuestShareService from "./guest/GuestShareService.ts";
 import {
@@ -1283,6 +1286,8 @@ export const layerWsRpc = (
       const providerSessionManager = yield* ProviderSessionManager.ProviderSessionManagerV2;
       const scheduledTasks = yield* ScheduledTasks.ScheduledTaskService;
       const plotlineDags = yield* PlotlineDags.PlotlineDagService;
+      const harnessProposals = yield* HarnessProposals.HarnessProposalService;
+      const harnessAnalysis = yield* HarnessAnalysis.HarnessAnalysisService;
       const secretRequests = yield* SecretRequests.SecretRequests;
       const guestShares = yield* GuestShareService.GuestShareService;
       const pullRequests = yield* PullRequestService.PullRequestService;
@@ -2185,6 +2190,71 @@ export const layerWsRpc = (
         [WS_METHODS.plotlineDagsSubscribe]: (input) => plotlineDags.subscribe(input),
         [WS_METHODS.plotlineDagsSave]: (input) => plotlineDags.save(input),
         [WS_METHODS.plotlineDagsDelete]: (input) => plotlineDags.delete(input.id, input.confirm),
+        [WS_METHODS.harnessProposalsList]: (input) => harnessProposals.list(input),
+        [WS_METHODS.harnessProposalsCreate]: (input) => harnessProposals.create(input),
+        [WS_METHODS.harnessProposalsRevise]: (input) => harnessProposals.revise(input),
+        [WS_METHODS.harnessProposalsApprove]: (input) =>
+          harnessProposals.approve(input.id, input.note),
+        [WS_METHODS.harnessProposalsReject]: (input) =>
+          harnessProposals.reject(input.id, input.note),
+        [WS_METHODS.harnessProposalsApply]: (input) => harnessProposals.apply(input.id),
+        [WS_METHODS.harnessProposalsMarkImplementedExternally]: (input) =>
+          harnessProposals.markImplementedExternally(input.id),
+        [WS_METHODS.harnessProposalsExport]: (input) => harnessProposals.export(input.id),
+        [WS_METHODS.harnessProposalsOutcome]: (input) =>
+          harnessProposals.list({}).pipe(
+            Effect.flatMap(({ proposals }) => {
+              const proposal = proposals.find((item) => item.id === input.id);
+              if (!proposal)
+                return Effect.fail(
+                  new HarnessError({
+                    message: "Harness proposal was not found.",
+                    proposalId: input.id,
+                  }),
+                );
+              const availableSince = proposalImplementationTime(proposal);
+              if (!availableSince)
+                return Effect.succeed(
+                  summarizeProposalOutcome({
+                    proposalId: proposal.id,
+                    implementationAt: null,
+                    events: [],
+                  }),
+                );
+              return sql<{ readonly status: string; readonly event_count: number }>`
+                SELECT json_extract(payload_json, '$.status') AS status, COUNT(*) AS event_count
+                FROM orchestration_v2_events
+                WHERE occurred_at >= ${availableSince} AND event_type = 'run.updated'
+                GROUP BY json_extract(payload_json, '$.status')
+              `.pipe(
+                Effect.mapError(
+                  () =>
+                    new HarnessError({
+                      message: "Could not evaluate Harness proposal outcomes.",
+                      proposalId: proposal.id,
+                    }),
+                ),
+                Effect.map((rows) => {
+                  return summarizeProposalOutcome({
+                    proposalId: proposal.id,
+                    implementationAt: availableSince,
+                    events: rows.map((row) => ({ status: row.status, count: row.event_count })),
+                  });
+                }),
+              );
+            }),
+          ),
+        [WS_METHODS.harnessProposalsRollback]: (input) => harnessProposals.rollback(input.id),
+        [WS_METHODS.harnessDefaultsGet]: (input) => harnessProposals.getDefaults(input.scope),
+        [WS_METHODS.harnessDefaultsSet]: (input) => harnessProposals.setDefaults(input),
+        [WS_METHODS.harnessAuditList]: (input) =>
+          harnessProposals.audit(input.proposalId).pipe(Effect.map((entries) => ({ entries }))),
+        [WS_METHODS.harnessInventoryList]: (input) => harnessProposals.inventory(input.scope),
+        [WS_METHODS.harnessAnalyze]: (input) =>
+          harnessAnalysis.analyze({
+            scope: input.scope,
+            ...(input.context === undefined ? {} : { context: input.context }),
+          }),
         [WS_METHODS.scheduledTasksSubscribe]: (_input) =>
           scheduledTasks.subscribeList().pipe(Stream.map(withVisibleWebhookUrls)),
         [WS_METHODS.scheduledTasksUpsert]: (input) => scheduledTasks.upsert(input),

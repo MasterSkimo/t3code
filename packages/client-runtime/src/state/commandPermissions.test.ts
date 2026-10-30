@@ -25,7 +25,7 @@ import * as Layer from "effect/Layer";
 import { Atom, AtomRegistry, AsyncResult } from "effect/reactivity";
 import { EnvironmentRegistry } from "../connection/registry.ts";
 import { createCommandPermissions } from "./commandPermissions.ts";
-import { createEnvironmentRpcCommand } from "./runtime.ts";
+import { createEnvironmentQueryAtomFamily, createEnvironmentRpcCommand } from "./runtime.ts";
 
 vi.mock("./session.ts", () => ({
   createEnvironmentSessionAtoms: () => ({ sessionStateAtom: sessions }),
@@ -307,6 +307,87 @@ it.effect("honors exact empty permissions and preserves legacy parent grants", (
       registry.set(sessions(env), AsyncResult.success(legacy));
       expect(registry.get(git.permissionAtom(env))).toBe(true);
       yield* git.authorize(registry, env);
+    }),
+  ),
+);
+
+const readGrant: AuthSessionState = {
+  ...grant(false),
+  scopes: [AuthOrchestrationReadScope],
+  permissions: [AuthOrchestrationReadScope],
+};
+
+const connectedRuntime = (session: RpcSession) =>
+  Effect.gen(function* () {
+    const supervisor = {
+      target: { environmentId: env, label: "target" },
+      state: yield* SubscriptionRef.make({ phase: "connected" }),
+      session: yield* SubscriptionRef.make(Option.some(session)),
+    } as unknown as EnvironmentSupervisor["Service"];
+    return Atom.runtime(
+      Layer.succeed(EnvironmentRegistry, {
+        run: (_id: EnvironmentId, effect: Effect.Effect<unknown>) =>
+          Effect.provideService(effect, EnvironmentSupervisor, supervisor),
+        followStream: () => Stream.succeed([{ phase: "connected" }, Option.some(session)]),
+      } as unknown as EnvironmentRegistry["Service"]),
+    );
+  });
+
+const guardedReadSession = (reads: string[]) =>
+  ({
+    client: {
+      [WS_METHODS.harnessProposalsList]: () =>
+        Effect.sync(() => {
+          reads.push("read");
+          return { proposals: [] };
+        }),
+    },
+  }) as unknown as RpcSession;
+
+it.effect("reads a guarded query through the connection's grant", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const reads: string[] = [];
+      const queryRuntime = yield* connectedRuntime(guardedReadSession(reads));
+      const registry = yield* setup;
+      registry.set(sessions(env), AsyncResult.success(readGrant));
+      const atom = createEnvironmentQueryAtomFamily(queryRuntime, {
+        label: "test.guarded-read",
+        execute: () => requestGuarded(WS_METHODS.harnessProposalsList, {}),
+      })({ environmentId: env, input: undefined });
+      const unmount = registry.mount(atom);
+      yield* Effect.addFinalizer(() => Effect.sync(() => unmount()));
+
+      expect(yield* AtomRegistry.getResult(registry, atom, { suspendOnWaiting: true })).toEqual({
+        proposals: [],
+      });
+      expect(reads).toEqual(["read"]);
+    }),
+  ),
+);
+
+it.effect("denies a guarded query read the connection does not hold", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const reads: string[] = [];
+      const queryRuntime = yield* connectedRuntime(guardedReadSession(reads));
+      const registry = yield* setup;
+      registry.set(sessions(env), AsyncResult.success(grant(true)));
+      const atom = createEnvironmentQueryAtomFamily(queryRuntime, {
+        label: "test.guarded-read-denied",
+        execute: () => requestGuarded(WS_METHODS.harnessProposalsList, {}),
+      })({ environmentId: env, input: undefined });
+      const unmount = registry.mount(atom);
+      yield* Effect.addFinalizer(() => Effect.sync(() => unmount()));
+
+      const denied = yield* AtomRegistry.getResult(registry, atom, {
+        suspendOnWaiting: true,
+      }).pipe(Effect.flip);
+      expect(denied).toMatchObject({
+        requiredScope: AuthOrchestrationReadScope,
+        requiredPermission: AuthOrchestrationReadScope,
+      });
+      expect(reads).toEqual([]);
     }),
   ),
 );

@@ -282,6 +282,10 @@ function createTextGeneration(
         title: "Update workflow",
       }),
     generateReviewGuide: () => Effect.succeed({ stops: [] }),
+    generateStructuredOutput: () =>
+      Effect.fail(
+        new TextGenerationError({ operation: "generateStructuredOutput", detail: "unused" }),
+      ),
     ...overrides,
   };
 
@@ -331,6 +335,7 @@ function createTextGeneration(
         ),
       ),
     generateReviewGuide: (input) => implementation.generateReviewGuide(input),
+    generateStructuredOutput: (input) => implementation.generateStructuredOutput(input),
   };
 }
 

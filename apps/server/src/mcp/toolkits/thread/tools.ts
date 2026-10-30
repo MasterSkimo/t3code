@@ -80,7 +80,7 @@ const QUEUE_READ_ACTIONS = ["list", "read"] as const;
 const QueueTool = Tool.make("t3_queue", {
   ...commandTool,
   description:
-    "Manage a thread's queued messages. Omit `threadId` for this thread. list: send order, paged by `cursor` and `limit`. read: up to 16,000 chars of one. edit: replace its `text`; attachments stay. cancel. reorder: before `beforeRunId`, or to the end with null. promote_to_steer: send it now as steering to active `targetRunId`. Writes fail once the run is no longer queued.",
+    "Manage queued messages; omit `threadId` for this thread. `list` pages send order; `read` returns up to 16,000 chars. `edit` replaces text (attachments stay); `cancel` removes; `reorder` moves before `beforeRunId` or to end (null). `promote_to_steer` sends to active `targetRunId`. Writes fail after dequeue.",
   parameters: Schema.Struct({
     action: Schema.Literals([
       ...QUEUE_READ_ACTIONS,
@@ -159,7 +159,7 @@ const ThreadConfigureTool = Tool.make("t3_thread_configure", {
 const ThreadTransferTool = Tool.make("t3_thread_transfer", {
   ...commandTool,
   description:
-    "Move context between threads. Omit `threadId` for this thread. fork: copy it from `sourcePoint` (default latest stable run) into a new thread with the same setup; no turn runs yet. merge_back: merge it from `sourcePoint` into a related `targetThreadId` in the same project. status: its context transfers.",
+    "Move context between threads; omit `threadId` for this thread. `fork` copies `sourcePoint` (default latest stable run) into a same-setup thread without starting a turn. `merge_back` applies a source point to related `targetThreadId` in this project. `status` lists transfers.",
   parameters: Schema.Struct({
     action: Schema.Literals(["fork", "merge_back", "status"]),
     threadId: Schema.optional(ThreadId),

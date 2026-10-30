@@ -39,6 +39,37 @@ async function reloadRightPanelStore() {
 }
 
 describe("rightPanelStore", () => {
+  it("persists a conversation-scoped Plotline tab and selects the requested DAG", () => {
+    const store = useRightPanelStore.getState();
+    store.openPlotline(refA, "dag-a");
+    store.openPlotline(refB, "dag-b");
+    store.openPlotline(refA, "dag-c");
+
+    expect(selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
+      id: "plotline",
+      kind: "plotline",
+      dagId: "dag-c",
+    });
+    expect(selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refB)).toEqual({
+      id: "plotline",
+      kind: "plotline",
+      dagId: "dag-b",
+    });
+  });
+
+  it("keeps the selected Plotline run when the right panel closes and reopens", () => {
+    const store = useRightPanelStore.getState();
+    store.openPlotline(refA, "dag-a");
+    store.close(refA);
+    store.show(refA);
+
+    expect(selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
+      id: "plotline",
+      kind: "plotline",
+      dagId: "dag-a",
+    });
+  });
+
   it("records single and bulk tab closes, newest first", () => {
     const store = useRightPanelStore.getState();
     const pr = pullRequestSurface({

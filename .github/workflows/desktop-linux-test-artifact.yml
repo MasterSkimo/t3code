@@ -1,0 +1,138 @@
+name: Desktop Linux test AppImage
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-linux-test-artifact-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  appimage:
+    name: Build Linux x64 AppImage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      # Match the release workflow's checkout workaround for orphaned gitlinks
+      # in .repos, and build the exact commit submitted to this PR.
+      - name: Checkout PR commit
+        shell: bash
+        env:
+          CHECKOUT_REF: ${{ github.event.pull_request.head.sha }}
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "$CHECKOUT_REF"
+          git sparse-checkout set --no-cone '/*' '!/.repos/'
+          git -c checkout.workers=0 checkout --detach FETCH_HEAD
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: false
+
+      - name: Install desktop dependencies
+        run: vp install --filter=@t3tools/desktop... --filter=t3... --filter=@t3tools/scripts...
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Install Linux desktop build libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libsecret-1-dev pkg-config imagemagick
+
+      - name: Configure public T3 Connect defaults
+        run: cp .env.example .env
+
+      - name: Build AppImage
+        env:
+          T3CODE_TELEMETRY_CHANNEL: dev
+        run: vp run dist:desktop:linux
+
+      - name: Name and validate test artifact
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          images=(release/*.AppImage)
+          if [[ ${#images[@]} -ne 1 ]]; then
+            echo "Expected one AppImage in release/, found ${#images[@]}." >&2
+            printf '%s\n' "${images[@]}" >&2
+            exit 1
+          fi
+          if [[ ! -s "${images[0]}" ]]; then
+            echo "AppImage is empty: ${images[0]}" >&2
+            exit 1
+          fi
+
+          image_type="$(file -b "${images[0]}")"
+          echo "AppImage file type: $image_type"
+          if [[ "$image_type" != *"ELF 64-bit"* || "$image_type" != *"x86-64"* ]]; then
+            echo "Expected an x86_64 ELF AppImage, got: $image_type" >&2
+            exit 1
+          fi
+
+          # AppImage's extraction mode does not require FUSE and lets CI check
+          # the packaged filesystem and its actual Electron executable.
+          extract_dir="$RUNNER_TEMP/t3code-appimage-extract"
+          mkdir -p "$extract_dir"
+          (
+            cd "$extract_dir"
+            "${GITHUB_WORKSPACE}/${images[0]}" --appimage-extract
+          )
+          if [[ ! -d "$extract_dir/squashfs-root" ]] || \
+             ! find "$extract_dir/squashfs-root" -mindepth 1 -print -quit | grep -q .; then
+            echo "AppImage extraction did not produce a nonempty squashfs-root." >&2
+            exit 1
+          fi
+          packaged_executable="$(find "$extract_dir/squashfs-root" -type f -name t3code -perm /111 -print -quit)"
+          if [[ -z "$packaged_executable" ]]; then
+            echo "Could not find the packaged executable in the AppImage." >&2
+            exit 1
+          fi
+          executable_type="$(file -b "$packaged_executable")"
+          echo "Packaged executable: $packaged_executable ($executable_type)"
+          if [[ "$executable_type" != *"ELF 64-bit"* || "$executable_type" != *"x86-64"* ]]; then
+            echo "Expected the packaged t3code executable to be x86_64." >&2
+            exit 1
+          fi
+
+          mkdir -p test-artifact
+          short_sha="${SOURCE_SHA:0:12}"
+          artifact="t3code-native-dag-test-linux-x64-${short_sha}.AppImage"
+          cp "${images[0]}" "test-artifact/$artifact"
+          chmod +x "test-artifact/$artifact"
+          (
+            cd test-artifact
+            sha256sum "$artifact" > "$artifact.sha256"
+          )
+          {
+            echo "Source commit: $SOURCE_SHA"
+            echo "Architecture: Linux x64 (x86_64)"
+            echo "Build command: vp run dist:desktop:linux"
+            echo "Build validation: passed; one nonempty AppImage produced, x86_64 ELF confirmed, squashfs extracted, packaged executable confirmed"
+            echo "GUI launch validation: not performed"
+          } > test-artifact/BUILD_VALIDATION.txt
+
+      - name: Upload downloadable test AppImage
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: t3code-native-dag-test-linux-x64-${{ github.event.pull_request.head.sha }}
+          path: test-artifact/*
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0

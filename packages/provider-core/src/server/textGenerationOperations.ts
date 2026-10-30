@@ -5,7 +5,7 @@ import { type ChatAttachment, type ModelSelection, TextGenerationError } from "@
 import { formatGeneratedBranchName, sanitizeFeatureBranchName } from "@t3tools/shared/git";
 import { extractJsonObject } from "@t3tools/shared/schemaJson";
 
-import type { ProviderTextGeneration } from "./textGeneration.ts";
+import type { ProviderTextGeneration, ProviderTextGenerationOperation } from "./textGeneration.ts";
 import {
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
@@ -19,7 +19,7 @@ import {
   sanitizeThreadTitle,
 } from "./textGenerationUtils.ts";
 
-export type Operation = keyof ProviderTextGeneration;
+export type Operation = ProviderTextGenerationOperation;
 
 export interface Request<S extends Schema.Top> {
   readonly operation: Operation;
@@ -70,6 +70,17 @@ export const decodeJsonReply = <S extends Schema.Top>(
 };
 
 export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
+  const generateStructuredOutput: ProviderTextGeneration["generateStructuredOutput"] = Effect.fn(
+    `${name}.generateStructuredOutput`,
+  )(function* (input) {
+    return yield* run({
+      operation: "generateStructuredOutput",
+      cwd: input.cwd,
+      prompt: input.prompt,
+      outputSchema: input.outputSchema,
+      modelSelection: input.modelSelection,
+    });
+  });
   const generateCommitMessage: ProviderTextGeneration["generateCommitMessage"] = Effect.fn(
     `${name}.generateCommitMessage`,
   )(function* (input) {
@@ -168,10 +179,12 @@ export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
   });
 
   return {
+    supportsStructuredOutput: true,
     generateCommitMessage,
     generatePrContent,
     generateBranchName,
     generateThreadTitle,
     generateReviewGuide,
+    generateStructuredOutput,
   } satisfies ProviderTextGeneration;
 }

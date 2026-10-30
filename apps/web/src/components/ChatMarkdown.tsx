@@ -185,6 +185,8 @@ import {
   BrowserSettingsReadError,
 } from "../browser/openFileInPreview";
 import { resolveLinkTarget } from "../browser/browserLinkTarget";
+import { resolveAppRouteHref } from "../browser/appRouteLink";
+import { useNavigate } from "@tanstack/react-router";
 import { PullRequestLinkPreview } from "./pullRequest/PullRequestLinkPreview";
 import { MarkdownCodeBlock, SuspenseShikiCodeBlock } from "./chat/MarkdownCodeBlock";
 import { MarkdownMermaidCodeBlock } from "./chat/MarkdownMermaidCodeBlock";
@@ -1035,6 +1037,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
     );
   },
   a: function MarkdownAnchor({ node, href, children, title: _title, ...props }) {
+    const navigate = useNavigate();
     const {
       canOperateHost,
       canOperatePreview,
@@ -1109,6 +1112,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
           })
         : null;
       const isSameDocumentLink = href?.startsWith("#") ?? false;
+      const appRouteHref = href ? resolveAppRouteHref(href) : null;
       const onClick = props.onClick;
       const canOpenInPreview =
         canOperatePreview && Boolean(threadRef && isPreviewAvailableFor(threadRef.environmentId));
@@ -1126,6 +1130,20 @@ const CHAT_MARKDOWN_COMPONENTS = {
             onClick?.(event);
             if (isSameDocumentLink && href) {
               handleMarkdownFragmentClick(event, href);
+              return;
+            }
+            if (
+              appRouteHref &&
+              event.button === 0 &&
+              !event.defaultPrevented &&
+              !event.metaKey &&
+              !event.ctrlKey &&
+              !event.shiftKey &&
+              !event.altKey
+            ) {
+              event.preventDefault();
+              event.stopPropagation();
+              void navigate({ href: appRouteHref });
               return;
             }
             if (
