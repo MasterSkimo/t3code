@@ -1,6 +1,5 @@
 import {
   PlotlineDagSnapshot,
-  PlotlineSaveInput,
   PlotlineStorageError,
   type PlotlineSaveInput as PlotlineSaveInputType,
   type PlotlineDagSnapshot as PlotlineDagSnapshotType,
