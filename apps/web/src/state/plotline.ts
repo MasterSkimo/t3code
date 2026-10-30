@@ -17,7 +17,8 @@ export const plotlineEnvironment = {
     label: "plotline:dag-save",
     tag: WS_METHODS.plotlineSave,
     concurrency: {
-      mode: "singleFlight",
+      // Keep the newest completion state if updates arrive during an in-flight save.
+      mode: "latest",
       key: ({ environmentId, input }) => JSON.stringify([environmentId, input.threadId, input.runId]),
     },
   }),
