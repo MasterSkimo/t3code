@@ -463,6 +463,12 @@ describe("PlotlineDagService", () => {
           verificationAttemptId: "failed-verification",
           expectedCriteriaVersion: 2,
           expectedRunId: null,
+          dispatchInput: {
+            parentThreadId: ThreadId.make("thread:parent"),
+            parentRunId: "run:parent",
+            parentNodeId: "node:parent",
+            task: "Apply the failed criterion correction.",
+          },
         };
         const [first, duplicate] = yield* Effect.all(
           [
@@ -478,6 +484,7 @@ describe("PlotlineDagService", () => {
         assert.strictEqual(duplicate.shouldDispatch, true);
         assert.strictEqual(first.dag.tasks[0]!.correctionAttempts?.length, 1);
         assert.strictEqual(first.dag.tasks[0]!.executionLifecycle, "correction_in_progress");
+        assert.deepStrictEqual(first.correction.dispatchInput, input.dispatchInput);
 
         const linked = yield* service.linkCorrection("project:correction", {
           dagId: dag.id,
@@ -528,6 +535,7 @@ describe("PlotlineDagService", () => {
             assert.isNull(next.correction);
             assert.isFalse(next.shouldDispatch);
             assert.strictEqual(next.dag.tasks[0]!.executionLifecycle, "failed_escalated");
+            assert.strictEqual(next.dag.tasks[0]!.state, "failed");
             break;
           }
           if (!next.correction)
@@ -561,6 +569,11 @@ describe("PlotlineDagService", () => {
         );
         const reloaded = yield* restarted.getForProject("project:correction", dag.id);
         assert.deepStrictEqual(
+          reloaded.tasks[0]!.correctionAttempts?.[0]?.dispatchInput,
+          input.dispatchInput,
+          "correction dispatch input and owner must survive service restart",
+        );
+        assert.deepStrictEqual(
           reloaded.tasks[0]!.correctionAttempts?.map((attempt) => [
             attempt.attempt,
             attempt.state,
@@ -582,6 +595,78 @@ describe("PlotlineDagService", () => {
           ),
         ),
       ),
+  );
+
+  it.effect("persists escalation when a requested correction command is rejected", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`CREATE TABLE plotline_dags (dag_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, payload_json TEXT NOT NULL, updated_at TEXT NOT NULL)`;
+      yield* sql`CREATE TABLE plotline_task_run_index (project_id TEXT NOT NULL, dag_id TEXT NOT NULL, task_id TEXT NOT NULL, thread_id TEXT NOT NULL, run_id TEXT NOT NULL, PRIMARY KEY(project_id, dag_id, task_id))`;
+      yield* sql`CREATE TABLE harness_opencode_reconciliation (event_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, run_id TEXT NOT NULL, event_kind TEXT NOT NULL, status TEXT NOT NULL, next_attempt_at TEXT, updated_at TEXT NOT NULL)`;
+      const service = yield* PlotlineDags.PlotlineDagService;
+      const dag = yield* service.createForProject(
+        "project:rejected-correction",
+        "thread:parent",
+        null,
+        {
+          title: "Rejected correction",
+          description: "",
+        },
+      );
+      yield* service.addTasks("project:rejected-correction", {
+        dagId: dag.id,
+        tasks: [{ id: "task", title: "Task", description: "", effort: 1, dependsOn: [] }],
+      });
+      yield* service.updateTask("project:rejected-correction", {
+        dagId: dag.id,
+        taskId: "task",
+        acceptanceCriteria: [{ id: "works", description: "Behavior works" }],
+      });
+      yield* service.recordVerificationAttempt("project:rejected-correction", {
+        dagId: dag.id,
+        taskId: "task",
+        attemptId: "failed-verification",
+        expectedCriteriaVersion: 2,
+        expectedRunId: null,
+        verdict: "fail",
+        summary: "The test failed.",
+        criterionResults: [
+          { criterionId: "works", verdict: "fail", evidence: "Assertion failed." },
+        ],
+      });
+      const reserved = yield* service.beginCorrection("project:rejected-correction", {
+        dagId: dag.id,
+        taskId: "task",
+        verificationAttemptId: "failed-verification",
+        expectedCriteriaVersion: 2,
+        expectedRunId: null,
+        dispatchInput: {
+          type: "delegated_task.request",
+          parentThreadId: ThreadId.make("thread:parent"),
+          parentRunId: "run:parent",
+          parentNodeId: "node:parent",
+          task: "Apply the failed criterion correction.",
+        },
+      });
+      if (!reserved.correction) throw new Error("Expected a reserved correction.");
+      const failed = yield* service.settleCorrection("project:rejected-correction", {
+        dagId: dag.id,
+        taskId: "task",
+        correctionId: reserved.correction.id,
+        state: "failed",
+      });
+      assert.strictEqual(failed.tasks[0]!.correctionAttempts?.[0]?.state, "failed");
+      assert.strictEqual(failed.tasks[0]!.executionLifecycle, "failed_escalated");
+      assert.strictEqual(failed.tasks[0]!.state, "failed");
+    }).pipe(
+      Effect.provide(
+        PlotlineDags.layer.pipe(
+          Layer.provideMerge(
+            Layer.mergeAll(NodeSqliteClient.layer({ filename: ":memory:" }), NodeCrypto.layer),
+          ),
+        ),
+      ),
+    ),
   );
 
   it.effect(
@@ -622,6 +707,11 @@ describe("PlotlineDagService", () => {
           verificationAttemptId: "initial-failure",
           expectedCriteriaVersion: 2,
           expectedRunId: null,
+          dispatchInput: {
+            parentThreadId: ThreadId.make("thread:parent"),
+            parentRunId: "run:parent",
+            parentNodeId: "node:parent",
+          },
         });
         if (!reserved.correction) throw new Error("Expected a correction attempt.");
         yield* service.linkCorrection("project:reverify", {
@@ -633,7 +723,23 @@ describe("PlotlineDagService", () => {
           childRunId: "run:reverify-correction",
         });
 
+        yield* service.reconcileRun(
+          ThreadId.make("thread:reverify-correction"),
+          "run:reverify-correction",
+          "completed",
+        );
+        yield* service.reconcileRun(
+          ThreadId.make("thread:reverify-correction"),
+          "run:reverify-correction",
+          "completed",
+        );
         const completed = yield* service.settleCorrection("project:reverify", {
+          dagId: dag.id,
+          taskId: "task",
+          correctionId: reserved.correction.id,
+          state: "completed",
+        });
+        yield* service.settleCorrection("project:reverify", {
           dagId: dag.id,
           taskId: "task",
           correctionId: reserved.correction.id,
@@ -645,6 +751,89 @@ describe("PlotlineDagService", () => {
         assert.strictEqual(task.runId, "run:reverify-correction");
         assert.strictEqual(task.verificationAttempts?.length, 1);
         assert.notStrictEqual(task.state, "done");
+        assert.deepStrictEqual(task.correctionAttempts?.[0]?.verifierRequest, {
+          commandId: `plotline-verifier-${reserved.correction.id}`,
+          parentThreadId: ThreadId.make("thread:parent"),
+          parentRunId: "run:parent",
+          parentNodeId: "node:parent",
+          completionWake: "always",
+          criteriaVersion: 2,
+          expectedRunId: "run:reverify-correction",
+          correctionId: reserved.correction.id,
+          state: "requested",
+          task: [
+            "Independently verify Plotline task task in DAG " + dag.id + ".",
+            "Evaluate every current acceptance criterion against run run:reverify-correction.",
+            "Return structured JSON with verdict (pass, fail, or inconclusive), a concise summary, and one result per criterion with criterionId, verdict, and reproducible evidence.",
+            'Current criteria: [{"id":"works","description":"Behavior works"}]',
+            "Do not modify the task or claim success without evidence.",
+          ].join("\n\n"),
+        });
+        const restarted = yield* Effect.provide(
+          PlotlineDags.PlotlineDagService,
+          PlotlineDags.layer.pipe(
+            Layer.provideMerge(
+              Layer.mergeAll(Layer.succeed(SqlClient.SqlClient, sql), NodeCrypto.layer),
+            ),
+          ),
+        );
+        const afterRestart = yield* restarted.getForProject("project:reverify", dag.id);
+        assert.strictEqual(
+          afterRestart.tasks[0]!.correctionAttempts?.[0]?.verifierRequest &&
+            (afterRestart.tasks[0]!.correctionAttempts[0]!.verifierRequest as { state: string })
+              .state,
+          "requested",
+          "the verifier request remains recoverable after a service restart",
+        );
+        const dispatched = yield* restarted.updateVerifierRequest("project:reverify", {
+          dagId: dag.id,
+          taskId: "task",
+          correctionId: reserved.correction.id,
+          state: "dispatched",
+          childTaskId: "verifier-child",
+          childThreadId: ThreadId.make("thread:verifier"),
+          childRunId: "run:verifier",
+        });
+        assert.strictEqual(
+          dispatched.tasks[0]!.correctionAttempts?.[0]?.verifierRequest?.state,
+          "dispatched",
+        );
+        const backwards = yield* Effect.exit(
+          restarted.updateVerifierRequest("project:reverify", {
+            dagId: dag.id,
+            taskId: "task",
+            correctionId: reserved.correction.id,
+            state: "requested",
+          }),
+        );
+        assert.isTrue(backwards._tag === "Failure", "verifier states cannot move backwards");
+        const verifierCompleted = yield* restarted.updateVerifierRequest("project:reverify", {
+          dagId: dag.id,
+          taskId: "task",
+          correctionId: reserved.correction.id,
+          state: "completed",
+        });
+        assert.strictEqual(
+          verifierCompleted.tasks[0]!.correctionAttempts?.[0]?.verifierRequest?.state,
+          "completed",
+        );
+        yield* restarted.updateTask("project:reverify", {
+          dagId: dag.id,
+          taskId: "task",
+          acceptanceCriteria: [{ id: "works", description: "Updated behavior" }],
+        });
+        const staleVerifier = yield* Effect.exit(
+          restarted.updateVerifierRequest("project:reverify", {
+            dagId: dag.id,
+            taskId: "task",
+            correctionId: reserved.correction.id,
+            state: "completed",
+          }),
+        );
+        assert.isTrue(
+          staleVerifier._tag === "Failure",
+          "criteria edits invalidate old verifier runs",
+        );
       }).pipe(
         Effect.provide(
           PlotlineDags.layer.pipe(

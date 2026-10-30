@@ -1,12 +1,17 @@
 import {
+  CommandId,
   HarnessError,
+  PlotlineDagRecordVerificationInput,
+  PlotlineVerifierRequest,
   type OrchestrationV2DomainEvent,
+  type OrchestrationV2ServerCommand,
   type PlotlineDag,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
@@ -14,6 +19,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as Schema from "effect/Schema";
 import * as Schedule from "effect/Schedule";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
+import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as PlotlineDagService from "../plotline/PlotlineDagService.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import { findPlotlineTaskRunMatches } from "./plotlineTaskTracking.ts";
@@ -23,6 +30,20 @@ import { makeLoopGuardCollector, type LoopGuardIntervention } from "./loopGuard.
 const UnknownJsonString = Schema.fromJsonString(Schema.Unknown);
 const decodeJson = Schema.decodeUnknownEffect(UnknownJsonString);
 const encodeJson = Schema.encodeSync(UnknownJsonString);
+const decodeVerifierRequest = Schema.decodeUnknownEffect(PlotlineVerifierRequest);
+const decodeVerifierAttempt = Schema.decodeEffect(PlotlineDagRecordVerificationInput);
+const VerifierEvidence = Schema.Struct({
+  verdict: Schema.Literals(["pass", "fail", "inconclusive"]),
+  summary: Schema.String,
+  criterionResults: Schema.Array(
+    Schema.Struct({
+      criterionId: Schema.String,
+      verdict: Schema.Literals(["pass", "fail", "inconclusive"]),
+      evidence: Schema.String,
+    }),
+  ),
+});
+const decodeVerifierEvidence = Schema.decodeUnknownEffect(Schema.fromJsonString(VerifierEvidence));
 
 export type HarnessSignificantEventType =
   | "user_feedback"
@@ -473,6 +494,18 @@ export function makeSignificantEventCollector(): SignificantEventCollector {
 
 export const makeStore = Effect.gen(function* () {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
+  const threads = yield* Effect.serviceOption(
+    ThreadManagementService.ThreadManagementService,
+  ) as Effect.Effect<
+    Option.Option<ThreadManagementService.ThreadManagementService["Service"]>,
+    never,
+    never
+  >;
+  const eventSink = yield* Effect.serviceOption(EventSink.EventSinkV2) as Effect.Effect<
+    Option.Option<EventSink.EventSinkV2["Service"]>,
+    never,
+    never
+  >;
   const plotline = yield* PlotlineDagService.PlotlineDagService;
   const providers = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
   const sql = yield* SqlClient.SqlClient;
@@ -716,6 +749,11 @@ export const makeStore = Effect.gen(function* () {
       }
       pendingSignals.delete(stored.sequence);
       yield* publish(newEvents);
+      yield* reconcileVerifierResult(stored.event).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Verifier result reconciliation was deferred.", { cause }),
+        ),
+      );
       if (reconcileOpenCodeRun || reconcileCorrectionChild) {
         yield* scheduleReconciliation(stored.event.id);
         yield* Queue.offer(reconciliationWake, undefined);
@@ -763,8 +801,449 @@ export const makeStore = Effect.gen(function* () {
       processStoredEvent,
     ),
   );
+  const recoverRequestedCorrections = Effect.fn(
+    "HarnessSignificantEventStore.recoverRequestedCorrections",
+  )(function* () {
+    const dags = yield* plotline
+      .list({})
+      .pipe(
+        Effect.mapError(
+          () => new HarnessError({ message: "Could not inspect requested corrections." }),
+        ),
+      );
+    for (const dag of dags.dags) {
+      for (const task of dag.tasks) {
+        for (const correction of task.correctionAttempts ?? []) {
+          if (correction.state !== "requested") continue;
+          const failUnresolvable = () =>
+            plotline.settleCorrection(dag.projectId, {
+              dagId: dag.id,
+              taskId: task.id,
+              correctionId: correction.id,
+              state: "failed",
+            });
+          if (correction.dispatchInput === undefined) {
+            yield* failUnresolvable().pipe(Effect.ignore);
+            continue;
+          }
+          const dispatchInput = correction.dispatchInput as Omit<
+            Extract<OrchestrationV2ServerCommand, { type: "delegated_task.request" }>,
+            "commandId"
+          >;
+          if (
+            dispatchInput.type !== "delegated_task.request" ||
+            !dispatchInput.parentThreadId ||
+            !dispatchInput.parentRunId
+          ) {
+            yield* failUnresolvable().pipe(Effect.ignore);
+            continue;
+          }
+          const commandId = CommandId.make(`plotline-correction-${correction.id}`);
+          const dispatched = yield* orchestrator.dispatch({ ...dispatchInput, commandId }).pipe(
+            Effect.catch((cause) => {
+              const rejected =
+                typeof cause === "object" &&
+                cause !== null &&
+                "_tag" in cause &&
+                (cause._tag === "OrchestratorCommandPreviouslyRejectedError" ||
+                  cause._tag === "OrchestratorCommandIdConflictError" ||
+                  cause._tag === "OrchestratorCommandRejectedError");
+              if (rejected) {
+                return plotline
+                  .settleCorrection(dag.projectId, {
+                    dagId: dag.id,
+                    taskId: task.id,
+                    correctionId: correction.id,
+                    state: "failed",
+                  })
+                  .pipe(
+                    Effect.tap(() =>
+                      Effect.logWarning(
+                        "Plotline correction was permanently rejected and escalated.",
+                        {
+                          dagId: dag.id,
+                          taskId: task.id,
+                          correctionId: correction.id,
+                          cause,
+                        },
+                      ),
+                    ),
+                    Effect.as(null),
+                    Effect.catchCause(() => Effect.succeed(null)),
+                  );
+              }
+              return Effect.logWarning("Requested Plotline correction recovery was deferred.", {
+                dagId: dag.id,
+                taskId: task.id,
+                correctionId: correction.id,
+                cause,
+              }).pipe(Effect.as(null));
+            }),
+          );
+          if (dispatched === null) continue;
+          const child = dispatched.storedEvents.find(
+            (stored) =>
+              stored.event.type === "subagent.updated" &&
+              stored.event.payload.origin === "app_owned",
+          );
+          if (
+            child?.event.type !== "subagent.updated" ||
+            child.event.payload.childThreadId === null
+          )
+            continue;
+          const correctionChildThreadId = child.event.payload.childThreadId;
+          const childRun = dispatched.storedEvents.find(
+            (stored) =>
+              stored.event.type === "run.created" &&
+              stored.event.threadId === correctionChildThreadId,
+          );
+          if (childRun?.event.type !== "run.created") continue;
+          yield* plotline
+            .linkCorrection(dag.projectId, {
+              dagId: dag.id,
+              taskId: task.id,
+              correctionId: correction.id,
+              childTaskId: child.event.payload.id,
+              childThreadId: child.event.payload.childThreadId,
+              childRunId: childRun.event.payload.id,
+            })
+            .pipe(
+              Effect.catch((cause) =>
+                Effect.logWarning(
+                  "Recovered correction could not be linked; stable command replay will retry.",
+                  { dagId: dag.id, correctionId: correction.id, cause },
+                ),
+              ),
+            );
+        }
+      }
+    }
+  });
+  const failVerifierRequest = Effect.fn("HarnessSignificantEventStore.failVerifierRequest")(
+    function* (
+      dagId: string,
+      projectId: string,
+      taskId: string,
+      correctionId: string,
+      criteriaVersion: number,
+      expectedRunId: string | null,
+    ) {
+      yield* plotline
+        .updateVerifierRequest(projectId, {
+          dagId,
+          taskId,
+          correctionId,
+          state: "failed",
+        })
+        .pipe(Effect.ignore);
+      const latest = yield* plotline
+        .getForProject(projectId, dagId)
+        .pipe(Effect.orElseSucceed(() => null));
+      const task = latest?.tasks.find((candidate) => candidate.id === taskId);
+      if (
+        task &&
+        (task.criteriaVersion ?? 1) === criteriaVersion &&
+        (task.runId ?? null) === expectedRunId
+      )
+        yield* plotline
+          .updateTask(projectId, { dagId, taskId, state: "failed" })
+          .pipe(Effect.ignore);
+    },
+  );
+  const recoverVerifierRequests = Effect.fn("HarnessSignificantEventStore.recoverVerifierRequests")(
+    function* () {
+      if (Option.isNone(threads)) return;
+      const dags = yield* plotline.list({}).pipe(
+        Effect.mapError(
+          () => new HarnessError({ message: "Could not inspect verifier requests." }),
+        ),
+        Effect.catchCause(() => Effect.succeed({ dags: [] })),
+      );
+      for (const dag of dags.dags) {
+        for (const task of dag.tasks) {
+          for (const correction of task.correctionAttempts ?? []) {
+            const decoded = correction.verifierRequest
+              ? yield* decodeVerifierRequest(correction.verifierRequest).pipe(
+                  Effect.orElseSucceed(() => null),
+                )
+              : null;
+            if (!decoded) continue;
+            if (decoded.state === "dispatched") {
+              if (Option.isNone(eventSink) || decoded.childTaskId === undefined) continue;
+              const existingEvents = yield* Stream.runCollect(
+                eventSink.value.stream({
+                  threadId: decoded.parentThreadId,
+                  eventType: "subagent.updated",
+                }),
+              ).pipe(Effect.orElseSucceed(() => []));
+              const terminal = [...existingEvents]
+                .reverse()
+                .find(
+                  (stored) =>
+                    stored.event.type === "subagent.updated" &&
+                    stored.event.payload.id === decoded.childTaskId &&
+                    stored.event.payload.origin === "app_owned" &&
+                    ["completed", "failed", "cancelled", "interrupted"].includes(
+                      stored.event.payload.status,
+                    ),
+                );
+              if (terminal) yield* reconcileVerifierResult(terminal.event).pipe(Effect.ignore);
+              continue;
+            }
+            if (decoded.state !== "requested") continue;
+            if (
+              decoded.modelSelection === undefined ||
+              decoded.runtimeMode === undefined ||
+              decoded.interactionMode === undefined
+            ) {
+              yield* failVerifierRequest(
+                dag.id,
+                dag.projectId,
+                task.id,
+                correction.id,
+                decoded.criteriaVersion,
+                decoded.expectedRunId,
+              );
+              continue;
+            }
+            const command = {
+              type: "delegated_task.request" as const,
+              commandId: CommandId.make(decoded.commandId),
+              createdBy: "agent" as const,
+              creationSource: "mcp" as const,
+              parentThreadId: decoded.parentThreadId,
+              parentRunId: decoded.parentRunId as never,
+              parentNodeId: decoded.parentNodeId as never,
+              task: decoded.task,
+              title: `Verify Plotline task ${task.id}`,
+              modelSelection: decoded.modelSelection,
+              runtimeMode: decoded.runtimeMode,
+              interactionMode: decoded.interactionMode,
+              completionWake: "always" as const,
+            };
+            const dispatched = yield* threads.value
+              .dispatch(command)
+              .pipe(Effect.match({ onFailure: () => null, onSuccess: (result) => result }));
+            if (dispatched === null) {
+              // Inactive parents and unavailable providers are explicit escalations, not retries.
+              yield* failVerifierRequest(
+                dag.id,
+                dag.projectId,
+                task.id,
+                correction.id,
+                decoded.criteriaVersion,
+                decoded.expectedRunId,
+              );
+              continue;
+            }
+            const receipt = Option.isSome(eventSink)
+              ? yield* Stream.runCollect(
+                  eventSink.value.readByCommandId({ commandId: CommandId.make(decoded.commandId) }),
+                ).pipe(Effect.orElseSucceed(() => dispatched.storedEvents))
+              : dispatched.storedEvents;
+            const storedEvents = receipt.length === 0 ? dispatched.storedEvents : [...receipt];
+            const child = storedEvents.find(
+              (stored) =>
+                stored.event.type === "subagent.updated" &&
+                stored.event.payload.origin === "app_owned",
+            );
+            if (
+              child?.event.type !== "subagent.updated" ||
+              child.event.payload.childThreadId === null
+            ) {
+              yield* failVerifierRequest(
+                dag.id,
+                dag.projectId,
+                task.id,
+                correction.id,
+                decoded.criteriaVersion,
+                decoded.expectedRunId,
+              );
+              continue;
+            }
+            const verifierChildThreadId = child.event.payload.childThreadId;
+            const childRun = storedEvents.find(
+              (stored) =>
+                stored.event.type === "run.created" &&
+                stored.event.threadId === verifierChildThreadId,
+            );
+            if (childRun?.event.type !== "run.created") continue;
+            yield* plotline
+              .updateVerifierRequest(dag.projectId, {
+                dagId: dag.id,
+                taskId: task.id,
+                correctionId: correction.id,
+                state: "dispatched",
+                childTaskId: child.event.payload.id,
+                childThreadId: child.event.payload.childThreadId,
+                childRunId: childRun.event.payload.id,
+              })
+              .pipe(Effect.ignore);
+          }
+        }
+      }
+    },
+  );
+  const reconcileVerifierResult = Effect.fn("HarnessSignificantEventStore.reconcileVerifierResult")(
+    function* (event: OrchestrationV2DomainEvent) {
+      if (event.type !== "subagent.updated" || event.payload.origin !== "app_owned") return;
+      const payload = event.payload;
+      if (
+        payload.status !== "completed" &&
+        payload.status !== "failed" &&
+        payload.status !== "cancelled" &&
+        payload.status !== "interrupted"
+      )
+        return;
+      const dags = yield* plotline.list({}).pipe(Effect.orElseSucceed(() => ({ dags: [] })));
+      for (const dag of dags.dags) {
+        for (const task of dag.tasks) {
+          for (const correction of task.correctionAttempts ?? []) {
+            const request = correction.verifierRequest;
+            if (
+              !request ||
+              request.state !== "dispatched" ||
+              request.childTaskId !== payload.id ||
+              request.childThreadId !== payload.childThreadId
+            )
+              continue;
+            const evidence =
+              payload.status === "completed" && payload.result !== null
+                ? yield* decodeVerifierEvidence(payload.result).pipe(
+                    Effect.orElseSucceed(() => null),
+                  )
+                : null;
+            if (evidence === null) {
+              yield* failVerifierRequest(
+                dag.id,
+                dag.projectId,
+                task.id,
+                correction.id,
+                request.criteriaVersion,
+                request.expectedRunId,
+              );
+              continue;
+            }
+            const attemptInput = yield* decodeVerifierAttempt({
+              dagId: dag.id,
+              taskId: task.id,
+              attemptId: `plotline-verification-${correction.id}`,
+              expectedCriteriaVersion: request.criteriaVersion,
+              expectedRunId: request.expectedRunId,
+              ...evidence,
+            }).pipe(Effect.orElseSucceed(() => null));
+            if (attemptInput === null) {
+              yield* failVerifierRequest(
+                dag.id,
+                dag.projectId,
+                task.id,
+                correction.id,
+                request.criteriaVersion,
+                request.expectedRunId,
+              );
+              continue;
+            }
+            const recorded = yield* plotline
+              .recordVerificationAttempt(dag.projectId, attemptInput)
+              .pipe(Effect.match({ onFailure: () => false, onSuccess: () => true }));
+            if (!recorded) {
+              yield* failVerifierRequest(
+                dag.id,
+                dag.projectId,
+                task.id,
+                correction.id,
+                request.criteriaVersion,
+                request.expectedRunId,
+              );
+              continue;
+            }
+            if (evidence.verdict === "fail") {
+              const failedCriteria = evidence.criterionResults
+                .filter((result) => result.verdict === "fail")
+                .map((result) => {
+                  const criterion = task.acceptanceCriteria?.find(
+                    (item) => item.id === result.criterionId,
+                  );
+                  return `- ${result.criterionId}: ${criterion?.description ?? "Acceptance criterion"}\n  Evidence: ${result.evidence}`;
+                })
+                .join("\n");
+              const dispatchInput = {
+                type: "delegated_task.request" as const,
+                createdBy: "agent" as const,
+                creationSource: "mcp" as const,
+                parentThreadId: request.parentThreadId,
+                parentRunId: request.parentRunId as never,
+                parentNodeId: request.parentNodeId as never,
+                title: `Correct Plotline task ${task.id}`,
+                task: [
+                  `Correct native Plotline task ${task.id} (DAG ${dag.id}).`,
+                  `This is correction cycle ${
+                    (task.correctionAttempts?.length ?? 0) + 1
+                  } of 3. Preserve the task's intent and make the narrowest appropriate correction.`,
+                  `Failed verifier summary: ${evidence.summary}`,
+                  `Failed criteria:\n${failedCriteria || "No criterion-specific failure evidence was supplied."}`,
+                  "Do not claim acceptance. The parent will independently verify the resulting run against the current acceptance criteria.",
+                ].join("\n\n"),
+                modelSelection: request.modelSelection,
+                runtimeMode: request.runtimeMode,
+                interactionMode: request.interactionMode,
+                completionWake: "always" as const,
+              };
+              const reservation = yield* plotline
+                .beginCorrection(dag.projectId, {
+                  dagId: dag.id,
+                  taskId: task.id,
+                  verificationAttemptId: attemptInput.attemptId,
+                  expectedCriteriaVersion: request.criteriaVersion,
+                  expectedRunId: request.expectedRunId,
+                  dispatchInput,
+                })
+                .pipe(Effect.match({ onFailure: () => null, onSuccess: (result) => result }));
+              // Keep the terminal verifier request replayable until its failed result has
+              // durably reserved the correction (or durably recorded escalation).
+              if (reservation === null) continue;
+              if (reservation.shouldDispatch) yield* recoverRequestedCorrections();
+              yield* plotline
+                .updateVerifierRequest(dag.projectId, {
+                  dagId: dag.id,
+                  taskId: task.id,
+                  correctionId: correction.id,
+                  state: "completed",
+                })
+                .pipe(Effect.ignore);
+              continue;
+            }
+            // Only a fully passing, current evidence set can complete the task. Inconclusive
+            // evidence stops safely for maintainer review.
+            const settled = yield* plotline
+              .updateTask(dag.projectId, {
+                dagId: dag.id,
+                taskId: task.id,
+                state: evidence.verdict === "pass" ? "done" : "failed",
+              })
+              .pipe(Effect.match({ onFailure: () => false, onSuccess: () => true }));
+            if (!settled) continue;
+            yield* plotline
+              .updateVerifierRequest(dag.projectId, {
+                dagId: dag.id,
+                taskId: task.id,
+                correctionId: correction.id,
+                state: "completed",
+              })
+              .pipe(Effect.ignore);
+          }
+        }
+      }
+    },
+  );
   const reconciliationWorker = Effect.forever(
     Effect.gen(function* () {
+      yield* recoverRequestedCorrections().pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Requested Plotline correction recovery failed; retrying.", { cause }),
+        ),
+      );
+      yield* recoverVerifierRequests().pipe(Effect.ignoreCause);
       const now = DateTime.formatIso(DateTime.toUtc(yield* DateTime.now));
       const activeIds = [...activeReconciliations];
       const pending = yield* sql<{ readonly event_id: string }>`
@@ -794,7 +1273,9 @@ export const makeStore = Effect.gen(function* () {
             )
         `;
         if (next === undefined || next.next_attempt_at === null) {
-          yield* Queue.take(reconciliationWake);
+          yield* Queue.take(reconciliationWake).pipe(
+            Effect.timeoutOrElse({ duration: "1 second", orElse: () => Effect.void }),
+          );
         } else {
           const delay = Math.max(
             1,
@@ -831,7 +1312,8 @@ export const makeStore = Effect.gen(function* () {
   );
   yield* plotline.subscribe({}).pipe(
     Stream.runForEach((result) =>
-      Effect.sync(() => collector.observePlotlineDags(result.dags)).pipe(
+      Queue.offer(reconciliationWake, undefined).pipe(
+        Effect.andThen(Effect.sync(() => collector.observePlotlineDags(result.dags))),
         Effect.flatMap(publish),
         Effect.ignoreCause({ log: true }),
       ),

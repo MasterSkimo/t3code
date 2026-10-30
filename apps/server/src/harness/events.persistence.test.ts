@@ -81,6 +81,112 @@ const makeStoredSubagent = (status: "cancelled" | "interrupted" | "failed" | "co
   }),
 });
 
+const prepareDispatchedVerifier = (
+  plotline: PlotlineDagService.PlotlineDagService["Service"],
+  projectId: string,
+) =>
+  Effect.gen(function* () {
+    const dag = yield* plotline.createForProject(projectId, "thread_parent", null, {
+      title: "Automatic verification",
+      description: "",
+    });
+    yield* plotline.addTasks(projectId, {
+      dagId: dag.id,
+      tasks: [{ id: "task", title: "Task", description: "", effort: 1, dependsOn: [] }],
+    });
+    yield* plotline.updateTask(projectId, {
+      dagId: dag.id,
+      taskId: "task",
+      state: "running",
+      threadId: "thread_parent" as never,
+      runId: "run:initial",
+      acceptanceCriteria: [{ id: "works", description: "Behavior works" }],
+    });
+    yield* plotline.recordVerificationAttempt(projectId, {
+      dagId: dag.id,
+      taskId: "task",
+      attemptId: "initial-failure",
+      expectedCriteriaVersion: 2,
+      expectedRunId: "run:initial",
+      verdict: "fail",
+      summary: "Initial attempt failed.",
+      criterionResults: [{ criterionId: "works", verdict: "fail", evidence: "Test failed." }],
+    });
+    const reserved = yield* plotline.beginCorrection(projectId, {
+      dagId: dag.id,
+      taskId: "task",
+      verificationAttemptId: "initial-failure",
+      expectedCriteriaVersion: 2,
+      expectedRunId: "run:initial",
+      dispatchInput: {
+        type: "delegated_task.request",
+        parentThreadId: "thread_parent",
+        parentRunId: "run:parent",
+        parentNodeId: "node:parent",
+        task: "Apply the correction",
+        modelSelection: { instanceId: "codex", model: "test" },
+      },
+    });
+    if (!reserved.correction) throw new Error("Expected a correction attempt.");
+    yield* plotline.linkCorrection(projectId, {
+      dagId: dag.id,
+      taskId: "task",
+      correctionId: reserved.correction.id,
+      childTaskId: "correction-child",
+      childThreadId: "thread_correction_child" as never,
+      childRunId: "run:correction-child",
+    });
+    yield* plotline.settleCorrection(projectId, {
+      dagId: dag.id,
+      taskId: "task",
+      correctionId: reserved.correction.id,
+      state: "completed",
+    });
+    yield* plotline.updateVerifierRequest(projectId, {
+      dagId: dag.id,
+      taskId: "task",
+      correctionId: reserved.correction.id,
+      state: "dispatched",
+      childTaskId: "verifier-child",
+      childThreadId: "thread_verifier_child" as never,
+      childRunId: "run:verifier",
+    });
+    return { dag, correctionId: reserved.correction.id };
+  });
+
+const makeStoredVerifierResult = (
+  verdict: "pass" | "fail" | "inconclusive",
+  sequence = 1,
+  eventId = "subagent-event-verifier",
+) => {
+  const stored = makeStoredSubagent("completed");
+  return {
+    ...stored,
+    sequence,
+    event: {
+      ...stored.event,
+      id: eventId,
+      payload: {
+        ...stored.event.payload,
+        id: "verifier-child",
+        childThreadId: "thread_verifier_child",
+        runId: "run:verifier",
+        result: JSON.stringify({
+          verdict,
+          summary: "Automatic verification result.",
+          criterionResults: [
+            {
+              criterionId: "works",
+              verdict,
+              evidence: "The acceptance check did not pass.",
+            },
+          ],
+        }),
+      },
+    },
+  };
+};
+
 it.effect(
   "durably resumes the cursor and drains more than one outbox page without duplicates",
   () => {
@@ -248,6 +354,162 @@ it.effect("reconciles persisted OpenCode run events without verifying Plotline c
     );
   }).pipe(Effect.provide(layer), Effect.scoped);
 });
+
+it.effect("replays a passing verifier result across restart without duplicating settlement", () => {
+  const result = makeStoredVerifierResult("pass");
+  const duplicate = { ...makeStoredVerifierResult("pass", 2), event: result.event };
+  const orchestrator = Orchestrator.OrchestratorV2.of({
+    streamStoredEventsFrom: ({ afterSequence = 0 }: { readonly afterSequence?: number } = {}) =>
+      Stream.fromIterable([result, duplicate].filter((event) => event.sequence > afterSequence)),
+  } as unknown as Orchestrator.OrchestratorV2["Service"]);
+  const providers = ProviderInstanceRegistry.ProviderInstanceRegistry.of({
+    getInstance: () => Effect.void,
+  } as unknown as ProviderInstanceRegistry.ProviderInstanceRegistry["Service"]);
+  const persistence = Layer.mergeAll(SqlitePersistence.layerMemory, NodeCrypto.layer);
+  const layer = Layer.mergeAll(
+    PlotlineDagService.layer.pipe(Layer.provideMerge(persistence)),
+    Layer.succeed(Orchestrator.OrchestratorV2, orchestrator),
+    Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, providers),
+  );
+  return Effect.gen(function* () {
+    const plotline = yield* PlotlineDagService.PlotlineDagService;
+    const { dag, correctionId } = yield* prepareDispatchedVerifier(
+      plotline,
+      "project:passing-verifier-restart",
+    );
+    yield* Events.makeStore;
+    yield* TestClock.adjust("1 second");
+    const settled = (yield* plotline.getForProject("project:passing-verifier-restart", dag.id))
+      .tasks[0]!;
+    assert.strictEqual(settled.state, "done");
+    assert.strictEqual(settled.verificationAttempts?.length, 2);
+    assert.strictEqual(settled.correctionAttempts?.[0]?.verifierRequest?.state, "completed");
+
+    yield* Events.makeStore;
+    yield* TestClock.adjust("1 second");
+    const replayed = (yield* plotline.getForProject("project:passing-verifier-restart", dag.id))
+      .tasks[0]!;
+    assert.strictEqual(replayed.state, "done");
+    assert.strictEqual(replayed.verificationAttempts?.length, 2);
+    assert.strictEqual(replayed.correctionAttempts?.[0]?.id, correctionId);
+  }).pipe(Effect.provide(layer), Effect.scoped);
+});
+
+it.effect(
+  "reserves and dispatches a bounded correction for a failed automatic verifier, including replay",
+  () => {
+    const result = makeStoredVerifierResult("fail");
+    const duplicate = { ...makeStoredVerifierResult("fail", 2), event: result.event };
+    const dispatches: Array<{ readonly commandId: string; readonly type: string }> = [];
+    const orchestrator = Orchestrator.OrchestratorV2.of({
+      streamStoredEventsFrom: ({ afterSequence = 0 }: { readonly afterSequence?: number } = {}) =>
+        Stream.fromIterable([result, duplicate].filter((event) => event.sequence > afterSequence)),
+      dispatch: (command: { readonly commandId: string; readonly type: string }) =>
+        Effect.sync(() => {
+          dispatches.push(command);
+          return { storedEvents: [] };
+        }),
+    } as unknown as Orchestrator.OrchestratorV2["Service"]);
+    const providers = ProviderInstanceRegistry.ProviderInstanceRegistry.of({
+      getInstance: () => Effect.void,
+    } as unknown as ProviderInstanceRegistry.ProviderInstanceRegistry["Service"]);
+    const persistence = Layer.mergeAll(SqlitePersistence.layerMemory, NodeCrypto.layer);
+    const layer = Layer.mergeAll(
+      PlotlineDagService.layer.pipe(Layer.provideMerge(persistence)),
+      Layer.succeed(Orchestrator.OrchestratorV2, orchestrator),
+      Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, providers),
+    );
+    return Effect.gen(function* () {
+      const plotline = yield* PlotlineDagService.PlotlineDagService;
+      const { dag, correctionId: verifierCorrectionId } = yield* prepareDispatchedVerifier(
+        plotline,
+        "project:auto-correction",
+      );
+      yield* Events.makeStore;
+      yield* TestClock.adjust("1 second");
+      const first = yield* plotline.getForProject("project:auto-correction", dag.id);
+      const task = first.tasks[0]!;
+      assert.strictEqual(
+        task.state,
+        "running",
+        "a failed verifier should not escalate before correction",
+      );
+      assert.strictEqual(task.correctionAttempts?.length, 2);
+      const automatic = task.correctionAttempts?.[1];
+      assert.strictEqual(automatic?.state, "requested");
+      assert.strictEqual(automatic?.attempt, 2);
+      assert.notStrictEqual(automatic?.id, verifierCorrectionId);
+      assert.isAtLeast(
+        dispatches.length,
+        1,
+        "the reserved correction uses the existing dispatch path",
+      );
+      assert.isTrue(
+        dispatches.every((command) => command.type === "delegated_task.request"),
+        "replayed correction dispatches retain the delegated-task command type",
+      );
+      assert.isTrue(
+        dispatches.every((command) => command.commandId === `plotline-correction-${automatic?.id}`),
+        "duplicate/replayed results reuse the reservation's stable command id",
+      );
+
+      yield* Events.makeStore;
+      yield* TestClock.adjust("1 second");
+      const replayed = yield* plotline.getForProject("project:auto-correction", dag.id);
+      assert.strictEqual(replayed.tasks[0]!.correctionAttempts?.length, 2);
+    }).pipe(Effect.provide(layer), Effect.scoped);
+  },
+);
+
+it.effect(
+  "fails only a stale verifier request when its result replays after a newer task run",
+  () => {
+    const result = makeStoredVerifierResult("fail");
+    const duplicate = { ...makeStoredVerifierResult("fail", 2), event: result.event };
+    const orchestrator = Orchestrator.OrchestratorV2.of({
+      streamStoredEventsFrom: ({ afterSequence = 0 }: { readonly afterSequence?: number } = {}) =>
+        Stream.fromIterable([result, duplicate].filter((event) => event.sequence > afterSequence)),
+    } as unknown as Orchestrator.OrchestratorV2["Service"]);
+    const providers = ProviderInstanceRegistry.ProviderInstanceRegistry.of({
+      getInstance: () => Effect.void,
+    } as unknown as ProviderInstanceRegistry.ProviderInstanceRegistry["Service"]);
+    const persistence = Layer.mergeAll(SqlitePersistence.layerMemory, NodeCrypto.layer);
+    const layer = Layer.mergeAll(
+      PlotlineDagService.layer.pipe(Layer.provideMerge(persistence)),
+      Layer.succeed(Orchestrator.OrchestratorV2, orchestrator),
+      Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, providers),
+    );
+    return Effect.gen(function* () {
+      const plotline = yield* PlotlineDagService.PlotlineDagService;
+      const { dag } = yield* prepareDispatchedVerifier(plotline, "project:stale-verifier");
+      yield* plotline.updateTask("project:stale-verifier", {
+        dagId: dag.id,
+        taskId: "task",
+        runId: "run:newer",
+      });
+      yield* Events.makeStore;
+      yield* TestClock.adjust("1 second");
+      const current = yield* plotline.getForProject("project:stale-verifier", dag.id);
+      const task = current.tasks[0]!;
+      assert.strictEqual(task.runId, "run:newer");
+      assert.strictEqual(task.state, "running", "a stale verifier cannot fail the newer task run");
+      assert.strictEqual(task.correctionAttempts?.[0]?.verifierRequest?.state, "failed");
+      assert.strictEqual(
+        task.correctionAttempts?.length,
+        1,
+        "stale failure must not reserve a correction",
+      );
+      assert.strictEqual(task.verificationAttempts?.length, 1, "stale evidence is not recorded");
+
+      yield* Events.makeStore;
+      yield* TestClock.adjust("1 second");
+      const replayed = yield* plotline.getForProject("project:stale-verifier", dag.id);
+      assert.strictEqual(replayed.tasks[0]!.state, "running");
+      assert.strictEqual(replayed.tasks[0]!.runId, "run:newer");
+      assert.strictEqual(replayed.tasks[0]!.correctionAttempts?.length, 1);
+    }).pipe(Effect.provide(layer), Effect.scoped);
+  },
+);
 
 it.effect(
   "settles linked app-owned correction children from persisted terminal events and replays idempotently",
@@ -511,6 +773,13 @@ it.effect("reconciles an acknowledged terminal correction child after it is link
       verificationAttemptId: "failed-verification",
       expectedCriteriaVersion: 2,
       expectedRunId: null,
+      dispatchInput: {
+        type: "delegated_task.request",
+        parentThreadId: "thread_parent",
+        parentRunId: "run:parent",
+        parentNodeId: "node:parent",
+        task: "Apply the correction",
+      },
     });
     if (!reserved.correction) throw new Error("Expected a reserved correction.");
     yield* sql`INSERT INTO orchestration_events
@@ -591,7 +860,6 @@ it.effect("reconciles an acknowledged terminal correction child after it is link
     assert.strictEqual(stillUnlinked?.delivery_attempts, 1);
   }).pipe(Effect.provide(layer), Effect.scoped);
 });
-
 it.effect("isolates OpenCode reconciliation failures and persists bounded retry visibility", () => {
   let attempts = 0;
   const orchestrator = Orchestrator.OrchestratorV2.of({

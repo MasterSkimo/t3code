@@ -8,6 +8,7 @@ import {
   PlotlineDagUpdateTaskInput,
   PlotlineDagAddEventInput,
   ThreadId,
+  type OrchestrationV2ServerCommand,
   type PlotlineDagCreateInput,
   type PlotlineDag as PlotlineDagModel,
   type PlotlineDagTask,
@@ -15,6 +16,7 @@ import {
   type PlotlineDagBeginCorrectionInput,
   type PlotlineDagLinkCorrectionInput,
   type PlotlineDagSettleCorrectionInput,
+  type PlotlineDagUpdateVerifierRequestInput,
   type PlotlineCorrectionAttempt,
 } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
@@ -30,6 +32,51 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 const decodeDagJson = Schema.decodeUnknownSync(Schema.fromJsonString(PlotlineDag));
 const encodeDagJson = Schema.encodeSync(Schema.fromJsonString(PlotlineDag));
+const encodeJsonValue = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const sameJsonValue = (left: unknown, right: unknown) =>
+  left === undefined || right === undefined
+    ? left === right
+    : encodeJsonValue(left) === encodeJsonValue(right);
+const validVerifierRequestTransition = (
+  before: PlotlineCorrectionAttempt["verifierRequest"],
+  after: PlotlineCorrectionAttempt["verifierRequest"],
+) => {
+  if (!before || !after) return before === after;
+  const nextState =
+    before.state === after.state ||
+    (before.state === "requested" && ["dispatched", "failed"].includes(after.state)) ||
+    (before.state === "dispatched" && ["completed", "failed"].includes(after.state));
+  const {
+    state: _beforeState,
+    childTaskId: beforeTask,
+    childThreadId: beforeThread,
+    childRunId: beforeRun,
+    ...beforeImmutable
+  } = before;
+  const {
+    state: _afterState,
+    childTaskId: afterTask,
+    childThreadId: afterThread,
+    childRunId: afterRun,
+    ...afterImmutable
+  } = after;
+  return (
+    nextState &&
+    sameJsonValue(beforeImmutable, afterImmutable) &&
+    (beforeTask === afterTask || (beforeTask === undefined && afterTask !== undefined)) &&
+    (beforeThread === afterThread || (beforeThread === undefined && afterThread !== undefined)) &&
+    (beforeRun === afterRun || (beforeRun === undefined && afterRun !== undefined)) &&
+    [
+      [beforeTask, afterTask],
+      [beforeThread, afterThread],
+      [beforeRun, afterRun],
+    ].every(
+      ([beforeValue, afterValue]) =>
+        beforeValue === afterValue ||
+        (before.state === "requested" && after.state === "dispatched" && afterValue !== undefined),
+    )
+  );
+};
 const isPlotlineDagError = Schema.is(PlotlineDagError);
 const terminal = new Set(["done", "skipped"]);
 const transitions: Record<string, ReadonlyArray<string>> = {
@@ -38,6 +85,46 @@ const transitions: Record<string, ReadonlyArray<string>> = {
   failed: ["running", "skipped"],
   skipped: ["running"],
   done: [],
+};
+const makeVerifierRequest = (
+  dagId: string,
+  task: PlotlineDagTask,
+  correction: PlotlineCorrectionAttempt,
+): PlotlineCorrectionAttempt["verifierRequest"] => {
+  const owner = correction.dispatchInput as
+    | Extract<OrchestrationV2ServerCommand, { type: "delegated_task.request" }>
+    | undefined;
+  if (
+    !owner ||
+    owner.parentThreadId === undefined ||
+    owner.parentRunId === undefined ||
+    owner.parentNodeId === undefined ||
+    correction.childRunId === undefined
+  )
+    return correction.verifierRequest;
+  return (
+    correction.verifierRequest ?? {
+      commandId: `plotline-verifier-${correction.id}`,
+      parentThreadId: owner.parentThreadId,
+      parentRunId: owner.parentRunId,
+      parentNodeId: owner.parentNodeId,
+      modelSelection: owner.modelSelection,
+      runtimeMode: owner.runtimeMode,
+      interactionMode: owner.interactionMode,
+      completionWake: "always",
+      criteriaVersion: task.criteriaVersion ?? 1,
+      expectedRunId: correction.childRunId,
+      correctionId: correction.id,
+      state: "requested",
+      task: [
+        `Independently verify Plotline task ${task.id} in DAG ${dagId}.`,
+        `Evaluate every current acceptance criterion against run ${correction.childRunId}.`,
+        "Return structured JSON with verdict (pass, fail, or inconclusive), a concise summary, and one result per criterion with criterionId, verdict, and reproducible evidence.",
+        `Current criteria: ${encodeJsonValue(task.acceptanceCriteria ?? [])}`,
+        "Do not modify the task or claim success without evidence.",
+      ].join("\n\n"),
+    }
+  );
 };
 
 export class PlotlineDagService extends Context.Service<
@@ -93,6 +180,10 @@ export class PlotlineDagService extends Context.Service<
     readonly settleCorrection: (
       projectId: string,
       input: PlotlineDagSettleCorrectionInput,
+    ) => Effect.Effect<PlotlineDagModel, PlotlineDagError>;
+    readonly updateVerifierRequest: (
+      projectId: string,
+      input: PlotlineDagUpdateVerifierRequestInput,
     ) => Effect.Effect<PlotlineDagModel, PlotlineDagError>;
     readonly reconcileRun: (
       threadId: string,
@@ -219,7 +310,7 @@ function validateDag(dag: PlotlineDagModel, previous?: PlotlineDagModel): Plotli
         correction.attempt !== index + 1 ||
         verification === undefined ||
         verification.verdict !== "fail" ||
-        (correction.state !== "requested" &&
+        (!["requested", "failed"].includes(correction.state) &&
           (correction.childTaskId === undefined ||
             correction.childThreadId === undefined ||
             correction.childRunId === undefined))
@@ -286,7 +377,7 @@ function validateDag(dag: PlotlineDagModel, previous?: PlotlineDagModel): Plotli
         const after = nextCorrections[index]!;
         const validCorrectionTransition =
           before.state === after.state ||
-          (before.state === "requested" && after.state === "running") ||
+          (before.state === "requested" && ["running", "failed"].includes(after.state)) ||
           (before.state === "running" &&
             ["completed", "failed", "cancelled", "interrupted"].includes(after.state));
         if (
@@ -295,6 +386,13 @@ function validateDag(dag: PlotlineDagModel, previous?: PlotlineDagModel): Plotli
           before.verificationAttemptId !== after.verificationAttemptId ||
           before.createdAt !== after.createdAt ||
           !validCorrectionTransition ||
+          (before.dispatchInput !== undefined &&
+            !sameJsonValue(before.dispatchInput, after.dispatchInput)) ||
+          (before.verifierRequest !== undefined &&
+            !validVerifierRequestTransition(before.verifierRequest, after.verifierRequest)) ||
+          (before.verifierRequest === undefined &&
+            after.verifierRequest !== undefined &&
+            after.state !== "completed") ||
           (before.childTaskId !== undefined && before.childTaskId !== after.childTaskId) ||
           (before.childThreadId !== undefined && before.childThreadId !== after.childThreadId) ||
           (before.childRunId !== undefined && before.childRunId !== after.childRunId)
@@ -912,7 +1010,13 @@ const make = Effect.gen(function* () {
             ...currentDag,
             tasks: currentDag.tasks.map((item) =>
               item.id === task.id
-                ? { ...item, executionLifecycle: "failed_escalated" as const, updatedAt: now }
+                ? {
+                    ...item,
+                    state: "failed" as const,
+                    executionLifecycle: "failed_escalated" as const,
+                    finishedAt: now,
+                    updatedAt: now,
+                  }
                 : item,
             ),
           };
@@ -935,7 +1039,13 @@ const make = Effect.gen(function* () {
             ...currentDag,
             tasks: currentDag.tasks.map((item) =>
               item.id === task.id
-                ? { ...item, executionLifecycle: "failed_escalated" as const, updatedAt: now }
+                ? {
+                    ...item,
+                    state: "failed" as const,
+                    executionLifecycle: "failed_escalated" as const,
+                    finishedAt: now,
+                    updatedAt: now,
+                  }
                 : item,
             ),
           };
@@ -956,6 +1066,7 @@ const make = Effect.gen(function* () {
           verificationAttemptId: input.verificationAttemptId,
           attempt: attempts.length + 1,
           state: "requested",
+          ...(input.dispatchInput === undefined ? {} : { dispatchInput: input.dispatchInput }),
           createdAt: now,
           updatedAt: now,
         };
@@ -1072,11 +1183,44 @@ const make = Effect.gen(function* () {
         const index = attempts.findIndex((attempt) => attempt.id === input.correctionId);
         if (index < 0) return yield* dagError("Correction attempt was not found.", dag.id);
         const current = attempts[index]!;
-        if (current.state === input.state) return dag;
-        if (current.state !== "running")
+        if (current.state === input.state) {
+          if (input.state !== "completed" || current.verifierRequest !== undefined) return dag;
+          const verifierRequest = makeVerifierRequest(dag.id, task, current);
+          if (verifierRequest === undefined) return dag;
+          const now = DateTime.formatIso(DateTime.toUtc(yield* DateTime.now));
+          return {
+            ...dag,
+            tasks: dag.tasks.map((item) =>
+              item.id !== task.id
+                ? item
+                : {
+                    ...item,
+                    correctionAttempts: attempts.map((attempt, position) =>
+                      position === index
+                        ? { ...attempt, verifierRequest, updatedAt: now }
+                        : attempt,
+                    ),
+                    updatedAt: now,
+                  },
+            ),
+          };
+        }
+        if (
+          current.state !== "running" &&
+          !(current.state === "requested" && input.state === "failed")
+        )
           return yield* dagError("Only a running correction can be settled.", dag.id);
         const now = DateTime.formatIso(DateTime.toUtc(yield* DateTime.now));
-        const settled = { ...current, state: input.state, updatedAt: now };
+        const verifierRequest =
+          input.state === "completed"
+            ? makeVerifierRequest(dag.id, task, current)
+            : current.verifierRequest;
+        const settled = {
+          ...current,
+          state: input.state,
+          ...(verifierRequest === undefined ? {} : { verifierRequest }),
+          updatedAt: now,
+        };
         const nextTaskState = input.state === "completed" ? "running" : "failed";
         return appendEvent(
           {
@@ -1105,6 +1249,78 @@ const make = Effect.gen(function* () {
           input.state === "completed" ? "ok" : "error",
           task.id,
         );
+      }),
+    );
+
+  const updateVerifierRequest: PlotlineDagService["Service"]["updateVerifierRequest"] = (
+    projectId,
+    input,
+  ) =>
+    mutate(projectId, input.dagId, (dag) =>
+      Effect.gen(function* () {
+        const task = dag.tasks.find((item) => item.id === input.taskId);
+        if (!task) return yield* dagError("Task was not found in this DAG.", dag.id);
+        const attempts = task.correctionAttempts ?? [];
+        const index = attempts.findIndex((attempt) => attempt.id === input.correctionId);
+        if (index < 0) return yield* dagError("Correction attempt was not found.", dag.id);
+        const current = attempts[index]!;
+        const request = current.verifierRequest;
+        if (!request) return yield* dagError("Verifier request was not found.", dag.id);
+        if (
+          input.state === "dispatched" &&
+          (!input.childTaskId || !input.childThreadId || !input.childRunId)
+        )
+          return yield* dagError("A dispatched verifier requires its full child identity.", dag.id);
+        if (
+          input.state !== "failed" &&
+          (request.criteriaVersion !== (task.criteriaVersion ?? 1) ||
+            request.expectedRunId !== (task.runId ?? null))
+        )
+          return yield* dagError("Verifier request is stale for current criteria or run.", dag.id);
+        const allowed =
+          request.state === input.state ||
+          (request.state === "requested" &&
+            (input.state === "dispatched" || input.state === "failed")) ||
+          (request.state === "dispatched" &&
+            (input.state === "completed" || input.state === "failed"));
+        if (!allowed)
+          return yield* dagError(
+            `Invalid verifier request transition: ${request.state} -> ${input.state}.`,
+            dag.id,
+          );
+        if (request.state === input.state) {
+          if (
+            (input.childTaskId !== undefined && request.childTaskId !== input.childTaskId) ||
+            (input.childThreadId !== undefined && request.childThreadId !== input.childThreadId) ||
+            (input.childRunId !== undefined && request.childRunId !== input.childRunId)
+          )
+            return yield* dagError("Verifier request identity cannot be changed.", dag.id);
+          return dag;
+        }
+        const now = DateTime.formatIso(DateTime.toUtc(yield* DateTime.now));
+        const nextRequest = {
+          ...request,
+          state: input.state,
+          ...(input.childTaskId === undefined ? {} : { childTaskId: input.childTaskId }),
+          ...(input.childThreadId === undefined ? {} : { childThreadId: input.childThreadId }),
+          ...(input.childRunId === undefined ? {} : { childRunId: input.childRunId }),
+        };
+        return {
+          ...dag,
+          tasks: dag.tasks.map((item) =>
+            item.id !== task.id
+              ? item
+              : {
+                  ...item,
+                  correctionAttempts: attempts.map((attempt, position) =>
+                    position === index
+                      ? { ...attempt, verifierRequest: nextRequest, updatedAt: now }
+                      : attempt,
+                  ),
+                  updatedAt: now,
+                },
+          ),
+        };
       }),
     );
 
@@ -1191,17 +1407,24 @@ const make = Effect.gen(function* () {
                 executionLifecycle,
                 updatedAt: now,
                 finishedAt: nextState === "running" ? null : now,
-                correctionAttempts: current.correctionAttempts?.map((attempt) =>
-                  attempt.childThreadId === threadId &&
-                  attempt.childRunId === runId &&
-                  attempt.state === "running"
-                    ? {
-                        ...attempt,
-                        state: status === "completed" ? "completed" : "failed",
-                        updatedAt: now,
-                      }
-                    : attempt,
-                ),
+                correctionAttempts: current.correctionAttempts?.map((attempt) => {
+                  if (
+                    attempt.childThreadId !== threadId ||
+                    attempt.childRunId !== runId ||
+                    attempt.state !== "running"
+                  )
+                    return attempt;
+                  const settled = {
+                    ...attempt,
+                    state: status === "completed" ? ("completed" as const) : ("failed" as const),
+                    updatedAt: now,
+                  };
+                  const verifierRequest =
+                    status === "completed"
+                      ? makeVerifierRequest(dag.id, current, settled)
+                      : undefined;
+                  return verifierRequest === undefined ? settled : { ...settled, verifierRequest };
+                }),
               };
               const next: PlotlineDagModel = {
                 ...dag,
@@ -1265,6 +1488,7 @@ const make = Effect.gen(function* () {
     beginCorrection,
     linkCorrection,
     settleCorrection,
+    updateVerifierRequest,
     reconcileRun,
     addEvent,
     delete: remove,

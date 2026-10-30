@@ -4,7 +4,7 @@ import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as PlotlineDagService from "../../../plotline/PlotlineDagService.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as HarnessEvents from "../../../harness/events.ts";
-import { CommandId } from "@t3tools/contracts";
+import { CommandId, type OrchestrationV2ServerCommand } from "@t3tools/contracts";
 import {
   dispatchFailure,
   readCaller,
@@ -149,18 +149,7 @@ const layer = McpToolAccess.toLayer(PlotlineToolkit, {
           message: "Plotline corrections require the active T3 run that owns this DAG.",
         });
 
-      const begun = yield* service
-        .beginCorrection(projectId, {
-          dagId: input.dagId,
-          taskId: input.taskId,
-          verificationAttemptId: input.attemptId,
-          expectedCriteriaVersion: input.expectedCriteriaVersion,
-          expectedRunId: input.expectedRunId,
-        })
-        .pipe(Effect.mapError(unavailable));
-      if (!begun.shouldDispatch || !begun.correction) return begun.dag;
-
-      const task = begun.dag.tasks.find((candidate) => candidate.id === input.taskId);
+      const task = dag.tasks.find((candidate) => candidate.id === input.taskId);
       const failedCriteria = input.criterionResults
         .filter((result) => result.verdict === "fail")
         .map((result) => {
@@ -170,28 +159,47 @@ const layer = McpToolAccess.toLayer(PlotlineToolkit, {
           return `- ${result.criterionId}: ${criterion?.description ?? "Acceptance criterion"}\n  Evidence: ${result.evidence}`;
         })
         .join("\n");
+      const dispatchInput = {
+        type: "delegated_task.request" as const,
+        createdBy: "agent" as const,
+        creationSource: "mcp" as const,
+        parentThreadId: context.scope.thread.threadId,
+        parentRunId: parentRun.id,
+        parentNodeId: parentRun.rootNodeId,
+        title: `Correct Plotline task ${input.taskId}`,
+        task: [
+          `Correct native Plotline task ${input.taskId} (DAG ${input.dagId}).`,
+          `This is correction cycle ${(task?.correctionAttempts?.length ?? 0) + 1} of 3. Preserve the task's intent and make the narrowest appropriate correction.`,
+          `Failed verifier summary: ${input.summary}`,
+          `Failed criteria:\n${failedCriteria || "No criterion-specific failure evidence was supplied."}`,
+          "Do not claim acceptance. The parent will independently verify the resulting run against the current acceptance criteria.",
+        ].join("\n\n"),
+        modelSelection: context.caller.modelSelection,
+        runtimeMode: context.caller.runtimeMode,
+        interactionMode: context.caller.interactionMode,
+        completionWake: "always" as const,
+      };
+      const begun = yield* service
+        .beginCorrection(projectId, {
+          dagId: input.dagId,
+          taskId: input.taskId,
+          verificationAttemptId: input.attemptId,
+          expectedCriteriaVersion: input.expectedCriteriaVersion,
+          expectedRunId: input.expectedRunId,
+          dispatchInput,
+        })
+        .pipe(Effect.mapError(unavailable));
+      if (!begun.shouldDispatch || !begun.correction) return begun.dag;
+
+      const persistedDispatchInput = begun.correction.dispatchInput as Omit<
+        Extract<OrchestrationV2ServerCommand, { type: "delegated_task.request" }>,
+        "commandId"
+      >;
       const commandId = CommandId.make(`plotline-correction-${begun.correction.id}`);
       const delegated = yield* context.threads
         .dispatch({
-          type: "delegated_task.request",
-          createdBy: "agent",
-          creationSource: "mcp",
+          ...persistedDispatchInput,
           commandId,
-          parentThreadId: context.scope.thread.threadId,
-          parentRunId: parentRun.id,
-          parentNodeId: parentRun.rootNodeId,
-          title: `Correct Plotline task ${input.taskId}`,
-          task: [
-            `Correct native Plotline task ${input.taskId} (DAG ${input.dagId}).`,
-            `This is correction cycle ${begun.correction.attempt} of 3. Preserve the task's intent and make the narrowest appropriate correction.`,
-            `Failed verifier summary: ${input.summary}`,
-            `Failed criteria:\n${failedCriteria || "No criterion-specific failure evidence was supplied."}`,
-            "Do not claim acceptance. The parent will independently verify the resulting run against the current acceptance criteria.",
-          ].join("\n\n"),
-          modelSelection: context.caller.modelSelection,
-          runtimeMode: context.caller.runtimeMode,
-          interactionMode: context.caller.interactionMode,
-          completionWake: "always",
         })
         .pipe(Effect.mapError(dispatchFailure));
       const taskEvent = delegated.storedEvents.find(

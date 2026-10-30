@@ -1,5 +1,7 @@
 import * as Schema from "effect/Schema";
 import { PositiveInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { ModelSelection } from "./modelSelection.ts";
+import { ProviderInteractionMode, RuntimeMode } from "./providerPolicy.ts";
 
 export const PlotlineTaskState = Schema.Literals([
   "pending",
@@ -77,6 +79,46 @@ export const PlotlineVerificationAttempt = Schema.Struct({
 });
 export type PlotlineVerificationAttempt = typeof PlotlineVerificationAttempt.Type;
 
+export const PlotlineVerifierRequestState = Schema.Literals([
+  "requested",
+  "dispatched",
+  "completed",
+  "failed",
+]);
+export type PlotlineVerifierRequestState = typeof PlotlineVerifierRequestState.Type;
+
+export const PlotlineVerifierRequest = Schema.Struct({
+  commandId: Schema.String,
+  parentThreadId: ThreadId,
+  parentRunId: Schema.String,
+  parentNodeId: Schema.String,
+  modelSelection: Schema.optional(ModelSelection),
+  runtimeMode: Schema.optional(RuntimeMode),
+  interactionMode: Schema.optional(ProviderInteractionMode),
+  completionWake: Schema.Literal("always"),
+  criteriaVersion: PositiveInt,
+  expectedRunId: Schema.String,
+  correctionId: VerificationId,
+  state: PlotlineVerifierRequestState,
+  task: TrimmedNonEmptyString.check(Schema.isMaxLength(16_384)),
+  childTaskId: Schema.optional(Schema.String),
+  childThreadId: Schema.optional(ThreadId),
+  childRunId: Schema.optional(Schema.String),
+});
+export type PlotlineVerifierRequest = typeof PlotlineVerifierRequest.Type;
+
+export const PlotlineDagUpdateVerifierRequestInput = Schema.Struct({
+  dagId: Schema.String,
+  taskId: Schema.String,
+  correctionId: VerificationId,
+  state: PlotlineVerifierRequestState,
+  childTaskId: Schema.optional(Schema.String),
+  childThreadId: Schema.optional(ThreadId),
+  childRunId: Schema.optional(Schema.String),
+});
+export type PlotlineDagUpdateVerifierRequestInput =
+  typeof PlotlineDagUpdateVerifierRequestInput.Type;
+
 export const PlotlineCorrectionAttempt = Schema.Struct({
   id: VerificationId,
   verificationAttemptId: VerificationId,
@@ -92,6 +134,11 @@ export const PlotlineCorrectionAttempt = Schema.Struct({
   childTaskId: Schema.optional(Schema.String),
   childThreadId: Schema.optional(ThreadId),
   childRunId: Schema.optional(Schema.String),
+  // The exact delegation input is persisted with the reservation so a retry can
+  // replay the same command after a crash without relying on the MCP caller.
+  dispatchInput: Schema.optional(Schema.Unknown),
+  // Created in the same Plotline transaction that settles a successful correction.
+  verifierRequest: Schema.optional(PlotlineVerifierRequest),
   createdAt: Schema.String,
   updatedAt: Schema.String,
 });
@@ -103,6 +150,7 @@ export const PlotlineDagBeginCorrectionInput = Schema.Struct({
   verificationAttemptId: VerificationId,
   expectedCriteriaVersion: PositiveInt,
   expectedRunId: Schema.NullOr(Schema.String),
+  dispatchInput: Schema.optional(Schema.Unknown),
 });
 export type PlotlineDagBeginCorrectionInput = typeof PlotlineDagBeginCorrectionInput.Type;
 export const PlotlineDagLinkCorrectionInput = Schema.Struct({

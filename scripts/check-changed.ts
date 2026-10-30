@@ -21,6 +21,7 @@ import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
 
 const root = NodePath.resolve(import.meta.dirname, "..");
 const CODE = /\.[cm]?[jt]sx?$/;
+const vpCli = NodePath.join(root, "node_modules/vite-plus/bin/vp");
 
 // quotePath=false keeps non-ASCII paths as real paths instead of quoted escapes.
 const git = (...args: Array<string>) =>
@@ -195,8 +196,8 @@ const checkPatches = (): boolean => {
       if (NodeFS.existsSync(NodePath.join(root, extra))) copy(extra);
     }
     const { status, stdout, stderr, error } = NodeChildProcess.spawnSync(
-      "vp",
-      ["install", "--lockfile-only", "--ignore-scripts"],
+      process.execPath,
+      [vpCli, "install", "--lockfile-only", "--ignore-scripts"],
       { cwd: temp, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
     );
     if (status === 0) return true;
@@ -274,7 +275,10 @@ const results = await Promise.all(
         // takes about a second, so the commands start right after it.
         if ("run" in step) return finish(step.run());
         const output: Array<Buffer> = [];
-        const child = NodeChildProcess.spawn("vp", step.args, { cwd: root, env });
+        const child = NodeChildProcess.spawn(process.execPath, [vpCli, ...step.args], {
+          cwd: root,
+          env,
+        });
         child.stdout.on("data", (chunk: Buffer) => output.push(chunk));
         child.stderr.on("data", (chunk: Buffer) => output.push(chunk));
         // A failed spawn emits "error", then "close" with a nonzero code.

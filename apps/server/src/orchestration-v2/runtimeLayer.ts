@@ -262,9 +262,6 @@ const layerHarnessProposalRecovery = Layer.effectDiscard(
       );
   }),
 ).pipe(Layer.provide(layerHarnessProposalsProvided));
-const layerHarnessEventsProvided = HarnessEvents.layer.pipe(
-  Layer.provide(Layer.merge(layerOrchestratorProvided, PlotlineDagService.layer)),
-);
 const layerHarnessEngineProvided = HarnessEngine.layer.pipe(Layer.provide(TextGeneration.layer));
 
 const layerAgentSessionImporterProvided = AgentSessionImporter.layer.pipe(
@@ -287,6 +284,16 @@ const layerThreadManagementProvided = ThreadManagementService.layerWithLegacyImp
       layerLegacyV1ThreadImporterProvided,
       layerCommandReceiptStoreProvided,
       layerProviderSessionManagerProvided,
+    ),
+  ),
+);
+const layerHarnessEventsProvided = HarnessEvents.layer.pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      layerOrchestratorProvided,
+      PlotlineDagService.layer,
+      layerThreadManagementProvided,
+      layerEventSinkProvided,
     ),
   ),
 );
