@@ -14,6 +14,7 @@ import * as Schema from "effect/Schema";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as PlotlineDagService from "../../../plotline/PlotlineDagService.ts";
+import * as HarnessEvents from "../../../harness/events.ts";
 
 const dependencies = [
   McpInvocationContext.McpInvocationContext,
@@ -78,8 +79,9 @@ const UpdateTaskTool = Tool.make("plotline_dag_update_task", {
   .annotate(Tool.Destructive, false);
 const RecordVerificationTool = Tool.make("plotline_dag_record_verification", {
   ...common,
+  dependencies: [...dependencies, HarnessEvents.HarnessSignificantEventStore],
   description:
-    "Record a structured verification attempt for a task against its acceptance criteria. Include an attemptId, overall verdict, summary, and a result for each criterion you evaluated. Recording verification never completes or changes the task state; use the task state tool separately when appropriate.",
+    "Record a verifier-reported verdict against an explicitly expected criteria version and run identity (use null when the task has no linked run). Include an attemptId, summary, and a result for each criterion you evaluated. The verdict and evidence are claims supplied by the verifier; Plotline does not independently rerun tests or prove that evidence is reproducible. Submissions whose expected criteria version or run no longer matches are rejected, including replays. Keep attempts in history. A failed verification automatically starts one T3-owned delegated correction using the existing delegation command/outbox, linked to this task and run; use its correctionAttempts[].childTaskId with task_status instead of launching a second delegate. After completion, independently verify against the linked runId with a new attemptId. T3 enforces at most 3 correction cycles by default, then records escalation and stops. Cancellation or interruption ends the lifecycle without further corrections. Recording verification never accepts/completes the task; only a current passing verification can satisfy its completion gate.",
   parameters: PlotlineDagRecordVerificationInput,
   success: PlotlineDag,
 })

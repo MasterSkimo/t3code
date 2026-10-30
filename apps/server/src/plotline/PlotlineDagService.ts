@@ -12,6 +12,10 @@ import {
   type PlotlineDag as PlotlineDagModel,
   type PlotlineDagTask,
   type PlotlineDagRecordVerificationInput as PlotlineDagRecordVerificationInputType,
+  type PlotlineDagBeginCorrectionInput,
+  type PlotlineDagLinkCorrectionInput,
+  type PlotlineDagSettleCorrectionInput,
+  type PlotlineCorrectionAttempt,
 } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Context from "effect/Context";
@@ -70,6 +74,26 @@ export class PlotlineDagService extends Context.Service<
       projectId: string,
       input: PlotlineDagRecordVerificationInputType,
     ) => Effect.Effect<PlotlineDagModel, PlotlineDagError>;
+    readonly beginCorrection: (
+      projectId: string,
+      input: PlotlineDagBeginCorrectionInput,
+    ) => Effect.Effect<
+      {
+        readonly dag: PlotlineDagModel;
+        readonly correction: PlotlineCorrectionAttempt | null;
+        readonly shouldDispatch: boolean;
+        readonly escalated: boolean;
+      },
+      PlotlineDagError
+    >;
+    readonly linkCorrection: (
+      projectId: string,
+      input: PlotlineDagLinkCorrectionInput,
+    ) => Effect.Effect<PlotlineDagModel, PlotlineDagError>;
+    readonly settleCorrection: (
+      projectId: string,
+      input: PlotlineDagSettleCorrectionInput,
+    ) => Effect.Effect<PlotlineDagModel, PlotlineDagError>;
     readonly reconcileRun: (
       threadId: string,
       runId: string,
@@ -112,12 +136,15 @@ function deriveState(tasks: ReadonlyArray<PlotlineDagTask>): PlotlineDagModel["s
 }
 
 const MAX_VERIFICATION_ATTEMPTS = 100;
+const MAX_CORRECTION_CYCLES = 3;
 
 function sameVerificationAttemptContent(
   stored: {
     readonly attemptId: string;
     readonly verdict: string;
     readonly summary: string;
+    readonly criteriaVersion?: number | undefined;
+    readonly runId?: string | undefined;
     readonly criterionResults: ReadonlyArray<{
       readonly criterionId: string;
       readonly verdict: string;
@@ -130,6 +157,8 @@ function sameVerificationAttemptContent(
     stored.attemptId === input.attemptId &&
     stored.verdict === input.verdict &&
     stored.summary === input.summary &&
+    stored.criteriaVersion === input.expectedCriteriaVersion &&
+    stored.runId === (input.expectedRunId ?? undefined) &&
     stored.criterionResults.length === input.criterionResults.length &&
     stored.criterionResults.every(
       (result, index) =>
@@ -174,6 +203,30 @@ function validateDag(dag: PlotlineDagModel, previous?: PlotlineDagModel): Plotli
       if (!criterion.id || criterionIds.has(criterion.id))
         return dagError(`Duplicate or empty acceptance criterion id for task ${task.id}`, dag.id);
       criterionIds.add(criterion.id);
+    }
+    const corrections = task.correctionAttempts ?? [];
+    if (corrections.length > MAX_CORRECTION_CYCLES)
+      return dagError(`Task ${task.id} exceeds the correction cycle limit.`, dag.id);
+    const correctionIds = new Set<string>();
+    const correctedVerificationIds = new Set<string>();
+    for (const [index, correction] of corrections.entries()) {
+      const verification = task.verificationAttempts?.find(
+        (attempt) => attempt.attemptId === correction.verificationAttemptId,
+      );
+      if (
+        correctionIds.has(correction.id) ||
+        correctedVerificationIds.has(correction.verificationAttemptId) ||
+        correction.attempt !== index + 1 ||
+        verification === undefined ||
+        verification.verdict !== "fail" ||
+        (correction.state !== "requested" &&
+          (correction.childTaskId === undefined ||
+            correction.childThreadId === undefined ||
+            correction.childRunId === undefined))
+      )
+        return dagError(`Invalid correction attempt history for task ${task.id}.`, dag.id);
+      correctionIds.add(correction.id);
+      correctedVerificationIds.add(correction.verificationAttemptId);
     }
   }
   const byId = new Map(dag.tasks.map((task) => [task.id, task]));
@@ -224,6 +277,32 @@ function validateDag(dag: PlotlineDagModel, previous?: PlotlineDagModel): Plotli
         );
       if (invalidTransition)
         return dagError(`Invalid task transition ${old.state} → ${task.state}: ${task.id}`, dag.id);
+      const oldCorrections = old?.correctionAttempts ?? [];
+      const nextCorrections = task.correctionAttempts ?? [];
+      if (nextCorrections.length < oldCorrections.length)
+        return dagError(`Correction history cannot be removed: ${task.id}`, dag.id);
+      for (let index = 0; index < oldCorrections.length; index += 1) {
+        const before = oldCorrections[index]!;
+        const after = nextCorrections[index]!;
+        const validCorrectionTransition =
+          before.state === after.state ||
+          (before.state === "requested" && after.state === "running") ||
+          (before.state === "running" &&
+            ["completed", "failed", "cancelled", "interrupted"].includes(after.state));
+        if (
+          before.id !== after.id ||
+          before.attempt !== after.attempt ||
+          before.verificationAttemptId !== after.verificationAttemptId ||
+          before.createdAt !== after.createdAt ||
+          !validCorrectionTransition ||
+          (before.childTaskId !== undefined && before.childTaskId !== after.childTaskId) ||
+          (before.childThreadId !== undefined && before.childThreadId !== after.childThreadId) ||
+          (before.childRunId !== undefined && before.childRunId !== after.childRunId)
+        )
+          return dagError(`Correction history is immutable: ${task.id}`, dag.id);
+      }
+      if (nextCorrections.some((attempt, index) => attempt.attempt !== index + 1))
+        return dagError(`Correction attempts must be sequential: ${task.id}`, dag.id);
     }
   }
   return null;
@@ -545,7 +624,11 @@ const make = Effect.gen(function* () {
         }
         if (input.state === "done" && nextCriteria.length > 0) {
           const latestAttempt = (current.verificationAttempts ?? [])
-            .filter((attempt) => (attempt.criteriaVersion ?? 1) === nextCriteriaVersion)
+            .filter(
+              (attempt) =>
+                (attempt.criteriaVersion ?? 1) === nextCriteriaVersion &&
+                attempt.runId === (current.runId ?? undefined),
+            )
             .at(-1);
           const verified =
             latestAttempt?.verdict === "pass" &&
@@ -573,6 +656,14 @@ const make = Effect.gen(function* () {
               ? { state: "pending" as const }
               : {}
             : { state: input.state }),
+          ...(input.state === "running" ||
+          (input.runId !== undefined && input.runId !== current.runId)
+            ? { executionLifecycle: "executing" as const }
+            : criteriaChanged
+              ? { executionLifecycle: "awaiting_verification" as const }
+              : input.state === "failed"
+                ? { executionLifecycle: "failed_escalated" as const }
+                : {}),
           ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
           ...(input.runId === undefined ? {} : { runId: input.runId }),
           ...(input.agent === undefined ? {} : { agent: input.agent }),
@@ -642,6 +733,16 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const task = dag.tasks.find((item) => item.id === input.taskId);
         if (!task) return yield* dagError("Task was not found in this DAG.", dag.id);
+        if (input.expectedCriteriaVersion !== (task.criteriaVersion ?? 1))
+          return yield* dagError(
+            "Verification submission is stale for the current acceptance criteria.",
+            dag.id,
+          );
+        if (input.expectedRunId !== (task.runId ?? null))
+          return yield* dagError(
+            "Verification submission is stale for the current task run.",
+            dag.id,
+          );
         const attempts = task.verificationAttempts ?? [];
         const existing = attempts.find((item) => item.attemptId === input.attemptId);
         const attemptData = {
@@ -659,6 +760,11 @@ const make = Effect.gen(function* () {
           if ((existing.criteriaVersion ?? 1) !== (task.criteriaVersion ?? 1))
             return yield* dagError(
               `Verification attempt is stale for the current acceptance criteria: ${input.attemptId}`,
+              dag.id,
+            );
+          if (existing.runId !== (task.runId ?? undefined))
+            return yield* dagError(
+              `Verification attempt is stale for the current task run: ${input.attemptId}`,
               dag.id,
             );
           return dag;
@@ -695,7 +801,8 @@ const make = Effect.gen(function* () {
         const attempt = {
           id: `ver_${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
           ...attemptData,
-          criteriaVersion: task.criteriaVersion ?? 1,
+          criteriaVersion: input.expectedCriteriaVersion,
+          ...(input.expectedRunId === null ? {} : { runId: input.expectedRunId }),
           createdAt: now,
         };
         if (task.state === "done" && input.verdict !== "pass") {
@@ -736,11 +843,268 @@ const make = Effect.gen(function* () {
                     ? { state: "pending" as const, finishedAt: null }
                     : {}),
                   verificationAttempts: [...(item.verificationAttempts ?? []), attempt],
+                  executionLifecycle:
+                    input.verdict === "pass"
+                      ? ("verification_passed" as const)
+                      : input.verdict === "fail"
+                        ? ("verification_failed" as const)
+                        : ("awaiting_verification" as const),
                   updatedAt: now,
                 }
               : item,
           ),
         };
+      }),
+    );
+
+  const beginCorrection: PlotlineDagService["Service"]["beginCorrection"] = Effect.fn(
+    "PlotlineDagService.beginCorrection",
+  )(function* (projectId, input) {
+    let correction: PlotlineCorrectionAttempt | null = null;
+    let shouldDispatch = false;
+    let escalated = false;
+    const dag = yield* mutate(projectId, input.dagId, (currentDag) =>
+      Effect.gen(function* () {
+        const task = currentDag.tasks.find((item) => item.id === input.taskId);
+        if (!task) return yield* dagError("Task was not found in this DAG.", currentDag.id);
+        if (
+          (task.criteriaVersion ?? 1) !== input.expectedCriteriaVersion ||
+          (task.runId ?? null) !== input.expectedRunId
+        )
+          return yield* dagError(
+            "Correction request is stale for the current task criteria or run.",
+            currentDag.id,
+          );
+        const verification = task.verificationAttempts?.find(
+          (attempt) => attempt.attemptId === input.verificationAttemptId,
+        );
+        if (
+          verification === undefined ||
+          verification.verdict !== "fail" ||
+          (verification.criteriaVersion ?? 1) !== input.expectedCriteriaVersion ||
+          verification.runId !== (input.expectedRunId ?? undefined)
+        )
+          return yield* dagError(
+            "A current failed verification is required to correct this task.",
+            currentDag.id,
+          );
+
+        const attempts = task.correctionAttempts ?? [];
+        const existing = attempts.find(
+          (attempt) => attempt.verificationAttemptId === input.verificationAttemptId,
+        );
+        if (existing) {
+          correction = existing;
+          shouldDispatch = existing.state === "requested";
+          return currentDag;
+        }
+        const lastCorrection = attempts.at(-1);
+        if (
+          lastCorrection &&
+          (lastCorrection.state === "failed" ||
+            lastCorrection.state === "cancelled" ||
+            lastCorrection.state === "interrupted")
+        ) {
+          escalated = true;
+          const marker = `Correction stopped after delegated run ${lastCorrection.childRunId ?? "unknown"} ended ${lastCorrection.state}.`;
+          const now = DateTime.formatIso(DateTime.toUtc(yield* DateTime.now));
+          const escalatedDag = {
+            ...currentDag,
+            tasks: currentDag.tasks.map((item) =>
+              item.id === task.id
+                ? { ...item, executionLifecycle: "failed_escalated" as const, updatedAt: now }
+                : item,
+            ),
+          };
+          return currentDag.events.some((event) => event.message === marker)
+            ? escalatedDag
+            : appendEvent(
+                escalatedDag,
+                `evt_${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
+                now,
+                marker,
+                "error",
+                task.id,
+              );
+        }
+        if (attempts.length >= MAX_CORRECTION_CYCLES) {
+          escalated = true;
+          const marker = `Correction limit reached for verification ${input.verificationAttemptId}.`;
+          const now = DateTime.formatIso(DateTime.toUtc(yield* DateTime.now));
+          const escalatedDag = {
+            ...currentDag,
+            tasks: currentDag.tasks.map((item) =>
+              item.id === task.id
+                ? { ...item, executionLifecycle: "failed_escalated" as const, updatedAt: now }
+                : item,
+            ),
+          };
+          return currentDag.events.some((event) => event.message === marker)
+            ? escalatedDag
+            : appendEvent(
+                escalatedDag,
+                `evt_${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
+                now,
+                marker,
+                "error",
+                task.id,
+              );
+        }
+        const now = DateTime.formatIso(DateTime.toUtc(yield* DateTime.now));
+        correction = {
+          id: `cor_${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
+          verificationAttemptId: input.verificationAttemptId,
+          attempt: attempts.length + 1,
+          state: "requested",
+          createdAt: now,
+          updatedAt: now,
+        };
+        shouldDispatch = true;
+        const nextTask = {
+          ...task,
+          executionLifecycle: "correction_in_progress" as const,
+          correctionAttempts: [...attempts, correction],
+          updatedAt: now,
+        };
+        return appendEvent(
+          {
+            ...currentDag,
+            tasks: currentDag.tasks.map((item) => (item.id === task.id ? nextTask : item)),
+          },
+          `evt_${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
+          now,
+          `Correction ${correction.attempt} requested for task ${task.id}.`,
+          "live",
+          task.id,
+        );
+      }),
+    );
+    return { dag, correction, shouldDispatch, escalated };
+  });
+
+  const linkCorrection: PlotlineDagService["Service"]["linkCorrection"] = (projectId, input) =>
+    mutate(projectId, input.dagId, (dag) =>
+      Effect.gen(function* () {
+        const task = dag.tasks.find((item) => item.id === input.taskId);
+        if (!task) return yield* dagError("Task was not found in this DAG.", dag.id);
+        const attempts = task.correctionAttempts ?? [];
+        const index = attempts.findIndex((attempt) => attempt.id === input.correctionId);
+        if (index < 0) return yield* dagError("Correction attempt was not found.", dag.id);
+        const current = attempts[index]!;
+        if (current.childTaskId !== undefined) {
+          if (
+            current.childTaskId !== input.childTaskId ||
+            current.childThreadId !== input.childThreadId ||
+            current.childRunId !== input.childRunId
+          )
+            return yield* dagError(
+              "Correction attempt is already linked to a different delegated run.",
+              dag.id,
+            );
+          yield* sql`UPDATE harness_opencode_reconciliation
+            SET status = 'pending', next_attempt_at = NULL, updated_at = CURRENT_TIMESTAMP
+            WHERE event_kind = 'correction_child' AND thread_id = ${input.childThreadId}
+              AND run_id = ${input.childRunId} AND status IN ('awaiting_link', 'delivering')`.pipe(
+            Effect.mapError(() =>
+              dagError("Could not requeue terminal correction deliveries.", dag.id),
+            ),
+          );
+          return dag;
+        }
+        if (current.state !== "requested")
+          return yield* dagError(
+            "Only a requested correction can be linked to a delegated run.",
+            dag.id,
+          );
+        const now = DateTime.formatIso(DateTime.toUtc(yield* DateTime.now));
+        const linked = {
+          ...current,
+          state: "running" as const,
+          childTaskId: input.childTaskId,
+          childThreadId: input.childThreadId,
+          childRunId: input.childRunId,
+          updatedAt: now,
+        };
+        yield* sql`UPDATE harness_opencode_reconciliation
+          SET status = 'pending', next_attempt_at = NULL, updated_at = CURRENT_TIMESTAMP
+          WHERE event_kind = 'correction_child' AND thread_id = ${input.childThreadId}
+            AND run_id = ${input.childRunId} AND status IN ('awaiting_link', 'delivering')`.pipe(
+          Effect.mapError(() =>
+            dagError("Could not requeue terminal correction deliveries.", dag.id),
+          ),
+        );
+        return appendEvent(
+          {
+            ...dag,
+            tasks: dag.tasks.map((item) =>
+              item.id !== task.id
+                ? item
+                : {
+                    ...item,
+                    state: "running" as const,
+                    executionLifecycle: "correction_in_progress" as const,
+                    threadId: input.childThreadId,
+                    runId: input.childRunId,
+                    startedAt: item.startedAt ?? now,
+                    finishedAt: null,
+                    updatedAt: now,
+                    correctionAttempts: attempts.map((attempt, position) =>
+                      position === index ? linked : attempt,
+                    ),
+                  },
+            ),
+          },
+          `evt_${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
+          now,
+          `Correction ${linked.attempt} started as delegated task ${input.childTaskId}.`,
+          "live",
+          task.id,
+        );
+      }),
+    );
+
+  const settleCorrection: PlotlineDagService["Service"]["settleCorrection"] = (projectId, input) =>
+    mutate(projectId, input.dagId, (dag) =>
+      Effect.gen(function* () {
+        const task = dag.tasks.find((item) => item.id === input.taskId);
+        if (!task) return yield* dagError("Task was not found in this DAG.", dag.id);
+        const attempts = task.correctionAttempts ?? [];
+        const index = attempts.findIndex((attempt) => attempt.id === input.correctionId);
+        if (index < 0) return yield* dagError("Correction attempt was not found.", dag.id);
+        const current = attempts[index]!;
+        if (current.state === input.state) return dag;
+        if (current.state !== "running")
+          return yield* dagError("Only a running correction can be settled.", dag.id);
+        const now = DateTime.formatIso(DateTime.toUtc(yield* DateTime.now));
+        const settled = { ...current, state: input.state, updatedAt: now };
+        const nextTaskState = input.state === "completed" ? "running" : "failed";
+        return appendEvent(
+          {
+            ...dag,
+            tasks: dag.tasks.map((item) =>
+              item.id !== task.id
+                ? item
+                : {
+                    ...item,
+                    state: nextTaskState,
+                    executionLifecycle:
+                      input.state === "completed"
+                        ? ("awaiting_verification" as const)
+                        : ("failed_escalated" as const),
+                    correctionAttempts: attempts.map((attempt, position) =>
+                      position === index ? settled : attempt,
+                    ),
+                    finishedAt: nextTaskState === "failed" ? now : null,
+                    updatedAt: now,
+                  },
+            ),
+          },
+          `evt_${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
+          now,
+          `Correction ${current.attempt} ended ${input.state}.`,
+          input.state === "completed" ? "ok" : "error",
+          task.id,
+        );
       }),
     );
 
@@ -799,7 +1163,24 @@ const make = Effect.gen(function* () {
               // Provider completion is never acceptance verification, including legacy tasks without criteria.
               const nextState: PlotlineDagTask["state"] =
                 status === "failed" ? "failed" : "running";
-              if (nextState === current.state && current.finishedAt === null) continue;
+              const executionLifecycle =
+                status === "running"
+                  ? "executing"
+                  : status === "completed"
+                    ? "awaiting_verification"
+                    : "failed_escalated";
+              const hasRunningCorrection = current.correctionAttempts?.some(
+                (attempt) =>
+                  attempt.childThreadId === threadId &&
+                  attempt.childRunId === runId &&
+                  attempt.state === "running",
+              );
+              if (
+                nextState === current.state &&
+                current.finishedAt === null &&
+                !hasRunningCorrection
+              )
+                continue;
               const now = nextUpdatedAt(
                 dag.updatedAt,
                 DateTime.formatIso(DateTime.toUtc(yield* DateTime.now)),
@@ -807,8 +1188,20 @@ const make = Effect.gen(function* () {
               const task: PlotlineDagTask = {
                 ...current,
                 state: nextState,
+                executionLifecycle,
                 updatedAt: now,
                 finishedAt: nextState === "running" ? null : now,
+                correctionAttempts: current.correctionAttempts?.map((attempt) =>
+                  attempt.childThreadId === threadId &&
+                  attempt.childRunId === runId &&
+                  attempt.state === "running"
+                    ? {
+                        ...attempt,
+                        state: status === "completed" ? "completed" : "failed",
+                        updatedAt: now,
+                      }
+                    : attempt,
+                ),
               };
               const next: PlotlineDagModel = {
                 ...dag,
@@ -869,6 +1262,9 @@ const make = Effect.gen(function* () {
     addTasks,
     updateTask,
     recordVerificationAttempt,
+    beginCorrection,
+    linkCorrection,
+    settleCorrection,
     reconcileRun,
     addEvent,
     delete: remove,

@@ -67,7 +67,7 @@ const OrchestratorCapabilitiesTool = Tool.make("orchestrator_capabilities", {
 
 const DelegateTaskTool = Tool.make("delegate_task", {
   description:
-    "Start one child agent with only `task`. No parent history. Separate checkout or PR per child: `isolation:'worktree'`. Keep `taskId` for `task_status` and `task_cancel`.",
+    "Start one child agent with only `task`. No parent history. Separate checkout or PR per child: `isolation:'worktree'`. Keep `taskId` for `task_status` and `task_cancel`. Treat delegation as execute → inspect/verify → correct → reverify: after a completed result, verify it against the task before accepting it. Allow at most 3 correction cycles by default; after that, stop and escalate to the orchestrator. Keep each correction tied to this taskId and its child run; do not act on stale results from an earlier run. Cancellation or interruption ends the lifecycle—do not launch another correction. This is a T3 delegation policy, not a change to a provider's internal agent loop.",
   parameters: OrchestratorMcpDelegateTaskInput,
   success: OrchestratorMcpDelegateTaskResult,
   failure: OrchestratorMcpFailure,

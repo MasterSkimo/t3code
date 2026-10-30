@@ -8,6 +8,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
+import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Schema from "effect/Schema";
@@ -50,6 +51,7 @@ export interface HarnessSignificantEvent {
 const MAX_EVENTS = 100;
 const MAX_DEDUPE_IDS = 1_000;
 const MAX_DELIVERY_ATTEMPTS = 3;
+const MAX_RETRY_DELAY_SECONDS = 300;
 const REPLAY_CONTEXT_EVENTS = 500;
 const MAX_EVIDENCE_CHARS = 1_000;
 
@@ -214,6 +216,10 @@ export class HarnessSignificantEventStore extends Context.Service<
       HarnessError
     >;
     readonly completeRootCandidate: (eventId: string) => Effect.Effect<void, HarnessError>;
+    readonly reconcileCorrectionChild: (input: {
+      readonly childThreadId: string;
+      readonly childRunId: string;
+    }) => Effect.Effect<void, HarnessError>;
     readonly failRootCandidate: (
       eventId: string,
       detail: string,
@@ -472,6 +478,10 @@ export const makeStore = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const collector = makeSignificantEventCollector();
   const changes = yield* PubSub.sliding<HarnessSignificantEvent>(100);
+  const reconciliationWake = yield* Queue.dropping<void>(1);
+  const activeReconciliations = new Set<string>();
+  yield* sql`UPDATE harness_opencode_reconciliation SET status = 'pending', updated_at = CURRENT_TIMESTAMP
+    WHERE status = 'delivering'`;
   const publish = (items: ReadonlyArray<HarnessSignificantEvent>) =>
     Effect.forEach(items, (event) => PubSub.publish(changes, event), { discard: true }).pipe(
       Effect.ignoreCause({ log: true }),
@@ -504,11 +514,129 @@ export const makeStore = Effect.gen(function* () {
   const committedSequences = new Set<number>();
   const pendingSignals = new Map<number, ReadonlyArray<HarnessSignificantEvent>>();
   let lastCommittedSequence = cursor?.sequence ?? 0;
+  const deliverOpenCodeRun = Effect.fn("HarnessSignificantEventStore.deliverOpenCodeRun")(
+    function* (eventId: string) {
+      const [row] = yield* sql<{
+        readonly thread_id: string;
+        readonly run_id: string;
+        readonly run_status: "running" | "completed" | "failed" | "cancelled" | "interrupted";
+        readonly event_kind: "opencode_run" | "correction_child";
+      }>`SELECT thread_id, run_id, run_status, event_kind FROM harness_opencode_reconciliation
+        WHERE event_id = ${eventId} AND status IN ('pending', 'failed')`;
+      if (!row) return;
+      const [claimed] = yield* sql<{ readonly delivery_attempts: number }>`
+        UPDATE harness_opencode_reconciliation
+        SET delivery_attempts = delivery_attempts + 1, status = 'delivering', updated_at = CURRENT_TIMESTAMP
+        WHERE event_id = ${eventId} AND status IN ('pending', 'failed')
+        RETURNING delivery_attempts
+      `;
+      if (!claimed) return;
+      const result = yield* (
+        row.event_kind === "correction_child"
+          ? Effect.gen(function* () {
+              const dags = yield* plotline.list({}).pipe(
+                Effect.mapError(
+                  () =>
+                    new HarnessError({
+                      message: "Could not inspect linked correction children.",
+                    }),
+                ),
+              );
+              let matched = false;
+              for (const dag of dags.dags) {
+                for (const task of dag.tasks) {
+                  for (const correction of task.correctionAttempts ?? []) {
+                    if (
+                      correction.state !== "running" ||
+                      correction.childThreadId !== row.thread_id ||
+                      correction.childRunId !== row.run_id
+                    )
+                      continue;
+                    matched = true;
+                    yield* plotline.settleCorrection(dag.projectId, {
+                      dagId: dag.id,
+                      taskId: task.id,
+                      correctionId: correction.id,
+                      state:
+                        row.run_status === "running"
+                          ? "interrupted"
+                          : row.run_status === "completed"
+                            ? "completed"
+                            : row.run_status,
+                    });
+                  }
+                }
+              }
+              return matched;
+            })
+          : plotline
+              .reconcileRun(
+                row.thread_id,
+                row.run_id,
+                row.run_status as "running" | "completed" | "failed",
+              )
+              .pipe(Effect.as(true))
+      ).pipe(
+        Effect.match({
+          onFailure: (error) => ({ ok: false as const, error }),
+          onSuccess: (value) => ({ ok: true as const, value }),
+        }),
+      );
+      if (result.ok && (row.event_kind !== "correction_child" || result.value)) {
+        yield* sql`UPDATE harness_opencode_reconciliation SET status = 'complete', failure_detail = NULL,
+          next_attempt_at = NULL, updated_at = CURRENT_TIMESTAMP
+          WHERE event_id = ${eventId} AND status = 'delivering'`;
+        return;
+      }
+      if (result.ok) {
+        // Keep unmatched app-owned children dormant until Plotline links this exact identity.
+        // They are reactivated by link-time reconciliation, not retried as arbitrary subagents.
+        yield* sql`UPDATE harness_opencode_reconciliation SET status = 'awaiting_link', updated_at = CURRENT_TIMESTAMP
+          WHERE event_id = ${eventId} AND status = 'delivering'`;
+        return;
+      }
+      const failureDetail =
+        result.error instanceof Error ? result.error.message : String(result.error);
+      const retryDelaySeconds = Math.min(
+        2 ** Math.min(claimed.delivery_attempts - 1, 9),
+        MAX_RETRY_DELAY_SECONDS,
+      );
+      const now = yield* DateTime.now;
+      const nextAttemptAt = DateTime.formatIso(
+        DateTime.toUtc(DateTime.add(now, { seconds: retryDelaySeconds })),
+      );
+      yield* sql`UPDATE harness_opencode_reconciliation
+        SET status = CASE WHEN delivery_attempts >= ${MAX_DELIVERY_ATTEMPTS} THEN 'failed' ELSE 'pending' END,
+            failure_detail = ${failureDetail.slice(0, 500)},
+            next_attempt_at = ${nextAttemptAt}, updated_at = CURRENT_TIMESTAMP
+        WHERE event_id = ${eventId} AND status = 'delivering'`;
+    },
+  );
+  const scheduleReconciliation = Effect.fn("HarnessSignificantEventStore.scheduleReconciliation")(
+    function* (eventId: string) {
+      const started = yield* Effect.sync(() => {
+        if (activeReconciliations.has(eventId)) return false;
+        activeReconciliations.add(eventId);
+        return true;
+      });
+      if (!started) return;
+      yield* deliverOpenCodeRun(eventId).pipe(
+        Effect.ensuring(
+          Effect.sync(() => activeReconciliations.delete(eventId)).pipe(
+            Effect.andThen(Queue.offer(reconciliationWake, undefined)),
+          ),
+        ),
+        Effect.forkScoped,
+      );
+    },
+  );
   const processStoredEvent = Effect.fn("HarnessSignificantEventStore.processStoredEvent")(
     function* (stored: import("@t3tools/contracts").OrchestrationV2StoredEvent) {
       if (committedSequences.has(stored.sequence)) return;
       const found = pendingSignals.get(stored.sequence) ?? collector.observe(stored.event);
       pendingSignals.set(stored.sequence, found);
+      let reconcileOpenCodeRun = false;
+      let reconcileCorrectionChild = false;
       if (
         stored.event.type === "run.updated" &&
         ["running", "completed", "failed"].includes(stored.event.payload.status)
@@ -516,18 +644,43 @@ export const makeStore = Effect.gen(function* () {
         const instance = yield* providers.getInstance(
           stored.event.payload.modelSelection.instanceId,
         );
-        // Complete this idempotent side effect before advancing the durable cursor.
-        if (instance?.driverKind === "opencode") {
-          yield* plotline.reconcileRun(
-            stored.event.threadId,
-            stored.event.payload.id,
-            stored.event.payload.status as "running" | "completed" | "failed",
-          );
-        }
+        reconcileOpenCodeRun = instance?.driverKind === "opencode";
+      }
+      if (
+        stored.event.type === "subagent.updated" &&
+        stored.event.payload.origin === "app_owned" &&
+        ["cancelled", "interrupted", "failed", "completed"].includes(stored.event.payload.status) &&
+        stored.event.payload.childThreadId !== null &&
+        stored.event.payload.runId !== null
+      ) {
+        reconcileCorrectionChild = true;
       }
       const newEvents: Array<HarnessSignificantEvent> = [];
       yield* sql.withTransaction(
         Effect.gen(function* () {
+          if (reconcileOpenCodeRun && stored.event.type === "run.updated") {
+            yield* sql`
+              INSERT INTO harness_opencode_reconciliation
+                (event_id, sequence, thread_id, run_id, run_status, created_at, updated_at)
+              VALUES (
+                ${stored.event.id}, ${stored.sequence}, ${stored.event.threadId},
+                ${stored.event.payload.id}, ${stored.event.payload.status},
+                ${DateTime.formatIso(stored.event.occurredAt)}, ${DateTime.formatIso(stored.event.occurredAt)}
+              ) ON CONFLICT(event_id) DO NOTHING
+            `;
+          }
+          if (reconcileCorrectionChild && stored.event.type === "subagent.updated") {
+            const status = stored.event.payload.status;
+            yield* sql`
+              INSERT INTO harness_opencode_reconciliation
+                (event_id, sequence, thread_id, run_id, run_status, event_kind, created_at, updated_at)
+              VALUES (
+                ${stored.event.id}, ${stored.sequence}, ${stored.event.payload.childThreadId!},
+                ${stored.event.payload.runId!}, ${status === "completed" ? "completed" : status === "failed" ? "failed" : status},
+                'correction_child', ${DateTime.formatIso(stored.event.occurredAt)}, ${DateTime.formatIso(stored.event.occurredAt)}
+              ) ON CONFLICT(event_id) DO NOTHING
+            `;
+          }
           for (const event of found) {
             const inserted = yield* sql<{ readonly signal_id: string }>`
               INSERT INTO harness_significant_event_dedupe (signal_id, sequence)
@@ -563,6 +716,10 @@ export const makeStore = Effect.gen(function* () {
       }
       pendingSignals.delete(stored.sequence);
       yield* publish(newEvents);
+      if (reconcileOpenCodeRun || reconcileCorrectionChild) {
+        yield* scheduleReconciliation(stored.event.id);
+        yield* Queue.offer(reconciliationWake, undefined);
+      }
       // Surface persisted Loop Guard evidence in the existing read-only Plotline panel.
       // Task ownership and orchestration state are untouched.
       const interventions = newEvents.filter((signal) => signal.type === "loop_guard");
@@ -606,6 +763,63 @@ export const makeStore = Effect.gen(function* () {
       processStoredEvent,
     ),
   );
+  const reconciliationWorker = Effect.forever(
+    Effect.gen(function* () {
+      const now = DateTime.formatIso(DateTime.toUtc(yield* DateTime.now));
+      const activeIds = [...activeReconciliations];
+      const pending = yield* sql<{ readonly event_id: string }>`
+        SELECT current.event_id FROM harness_opencode_reconciliation AS current
+        WHERE current.status IN ('pending', 'failed')
+          AND (current.next_attempt_at IS NULL OR current.next_attempt_at <= ${now})
+          ${activeIds.length === 0 ? sql`` : sql`AND current.event_id NOT IN ${sql.in(activeIds)}`}
+          AND NOT EXISTS (
+            SELECT 1 FROM harness_opencode_reconciliation AS earlier
+            WHERE earlier.event_kind = current.event_kind
+              AND earlier.thread_id = current.thread_id AND earlier.run_id = current.run_id
+              AND earlier.sequence < current.sequence AND earlier.status != 'complete'
+          )
+        ORDER BY current.sequence ASC LIMIT ${MAX_EVENTS}
+      `;
+      if (pending.length === 0) {
+        const [next] = yield* sql<{ readonly next_attempt_at: string | null }>`
+          SELECT MIN(current.next_attempt_at) AS next_attempt_at
+          FROM harness_opencode_reconciliation AS current
+          WHERE current.status IN ('pending', 'failed')
+            ${activeIds.length === 0 ? sql`` : sql`AND current.event_id NOT IN ${sql.in(activeIds)}`}
+            AND NOT EXISTS (
+              SELECT 1 FROM harness_opencode_reconciliation AS earlier
+              WHERE earlier.event_kind = current.event_kind
+                AND earlier.thread_id = current.thread_id AND earlier.run_id = current.run_id
+                AND earlier.sequence < current.sequence AND earlier.status != 'complete'
+            )
+        `;
+        if (next === undefined || next.next_attempt_at === null) {
+          yield* Queue.take(reconciliationWake);
+        } else {
+          const delay = Math.max(
+            1,
+            Date.parse(next.next_attempt_at) - DateTime.toEpochMillis(yield* DateTime.now),
+          );
+          yield* Queue.take(reconciliationWake).pipe(
+            Effect.timeoutOrElse({ duration: delay, orElse: () => Effect.void }),
+          );
+        }
+        return;
+      }
+      yield* Effect.forEach(pending, (row) => scheduleReconciliation(row.event_id), {
+        discard: true,
+      });
+    }),
+  ).pipe(
+    Effect.tapCause((cause) =>
+      Effect.logWarning("OpenCode run reconciliation worker hit a storage error; retrying.", {
+        cause,
+      }),
+    ),
+    Effect.retry({ schedule: Schedule.exponential("1 second") }),
+    Effect.forkScoped({ startImmediately: true }),
+  );
+  yield* reconciliationWorker;
   yield* runEventStream.pipe(
     Effect.tapCause((cause) =>
       Effect.logWarning("Harness event collection hit an orchestration stream error; retrying.", {
@@ -772,6 +986,80 @@ export const makeStore = Effect.gen(function* () {
             () => new HarnessError({ message: "Could not complete a root analysis candidate." }),
           ),
         );
+      },
+    ),
+    reconcileCorrectionChild: Effect.fn("HarnessSignificantEventStore.reconcileCorrectionChild")(
+      function* ({
+        childThreadId,
+        childRunId,
+      }: {
+        readonly childThreadId: string;
+        readonly childRunId: string;
+      }) {
+        const dags = yield* plotline
+          .list({})
+          .pipe(
+            Effect.mapError(
+              () => new HarnessError({ message: "Could not inspect linked correction children." }),
+            ),
+          );
+        const correctionIsRunning = dags.dags.some((dag) =>
+          dag.tasks.some((task) =>
+            task.correctionAttempts?.some(
+              (correction) =>
+                correction.state === "running" &&
+                correction.childThreadId === childThreadId &&
+                correction.childRunId === childRunId,
+            ),
+          ),
+        );
+        yield* sql
+          .withTransaction(
+            Effect.gen(function* () {
+              const matching = yield* sql<{
+                readonly sequence: number;
+                readonly event_id: string;
+                readonly thread_id: string;
+                readonly status: "cancelled" | "interrupted" | "failed" | "completed";
+                readonly occurred_at: string;
+              }>`SELECT sequence, event_id, ${childThreadId} AS thread_id,
+              json_extract(payload_json, '$.status') AS status, occurred_at
+            FROM orchestration_events
+            WHERE aggregate_kind = 'thread' AND event_type = 'subagent.updated'
+              AND json_extract(payload_json, '$.origin') = 'app_owned'
+              AND json_extract(payload_json, '$.childThreadId') = ${childThreadId}
+              AND json_extract(payload_json, '$.runId') = ${childRunId}
+              AND json_extract(payload_json, '$.status') IN ('cancelled', 'interrupted', 'failed', 'completed')
+            ORDER BY sequence ASC`;
+              yield* Effect.forEach(matching, (storedEvent) => {
+                const status = storedEvent.status;
+                return sql`
+            INSERT INTO harness_opencode_reconciliation
+              (event_id, sequence, thread_id, run_id, run_status, event_kind, status, created_at, updated_at)
+            VALUES (
+              ${storedEvent.event_id}, ${storedEvent.sequence}, ${storedEvent.thread_id}, ${childRunId},
+              ${status === "completed" ? "completed" : status === "failed" ? "failed" : status},
+              'correction_child', 'pending', ${storedEvent.occurred_at}, ${storedEvent.occurred_at}
+              ) ON CONFLICT(event_id) DO UPDATE SET
+                sequence = excluded.sequence,
+                thread_id = excluded.thread_id,
+                run_id = excluded.run_id,
+                run_status = excluded.run_status,
+                event_kind = excluded.event_kind,
+                status = CASE WHEN harness_opencode_reconciliation.status IN ('awaiting_link', 'delivering')
+                  OR (harness_opencode_reconciliation.status = 'complete' AND ${correctionIsRunning})
+                THEN 'pending' ELSE harness_opencode_reconciliation.status END,
+              next_attempt_at = NULL, updated_at = CURRENT_TIMESTAMP
+          `;
+              });
+            }),
+          )
+          .pipe(
+            Effect.mapError(
+              () => new HarnessError({ message: "Could not reconcile a linked correction child." }),
+            ),
+          );
+        yield* Queue.offer(reconciliationWake, undefined);
       },
     ),
     failRootCandidate: Effect.fn("HarnessSignificantEventStore.failRootCandidate")(function* (

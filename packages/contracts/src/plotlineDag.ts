@@ -10,6 +10,16 @@ export const PlotlineTaskState = Schema.Literals([
 ]);
 export type PlotlineTaskState = typeof PlotlineTaskState.Type;
 
+export const PlotlineExecutionLifecycle = Schema.Literals([
+  "executing",
+  "awaiting_verification",
+  "verification_passed",
+  "verification_failed",
+  "correction_in_progress",
+  "failed_escalated",
+]);
+export type PlotlineExecutionLifecycle = typeof PlotlineExecutionLifecycle.Type;
+
 export const PlotlineDagState = Schema.Literals(["waiting", "running", "done", "failed"]);
 export type PlotlineDagState = typeof PlotlineDagState.Type;
 
@@ -62,15 +72,62 @@ export const PlotlineVerificationAttempt = Schema.Struct({
   summary: VerificationSummary,
   criterionResults: VerificationCriterionResults,
   criteriaVersion: Schema.optional(PositiveInt),
+  runId: Schema.optional(Schema.String),
   createdAt: Schema.String,
 });
 export type PlotlineVerificationAttempt = typeof PlotlineVerificationAttempt.Type;
+
+export const PlotlineCorrectionAttempt = Schema.Struct({
+  id: VerificationId,
+  verificationAttemptId: VerificationId,
+  attempt: PositiveInt,
+  state: Schema.Literals([
+    "requested",
+    "running",
+    "completed",
+    "failed",
+    "cancelled",
+    "interrupted",
+  ]),
+  childTaskId: Schema.optional(Schema.String),
+  childThreadId: Schema.optional(ThreadId),
+  childRunId: Schema.optional(Schema.String),
+  createdAt: Schema.String,
+  updatedAt: Schema.String,
+});
+export type PlotlineCorrectionAttempt = typeof PlotlineCorrectionAttempt.Type;
+
+export const PlotlineDagBeginCorrectionInput = Schema.Struct({
+  dagId: Schema.String,
+  taskId: Schema.String,
+  verificationAttemptId: VerificationId,
+  expectedCriteriaVersion: PositiveInt,
+  expectedRunId: Schema.NullOr(Schema.String),
+});
+export type PlotlineDagBeginCorrectionInput = typeof PlotlineDagBeginCorrectionInput.Type;
+export const PlotlineDagLinkCorrectionInput = Schema.Struct({
+  dagId: Schema.String,
+  taskId: Schema.String,
+  correctionId: VerificationId,
+  childTaskId: Schema.String,
+  childThreadId: ThreadId,
+  childRunId: Schema.String,
+});
+export type PlotlineDagLinkCorrectionInput = typeof PlotlineDagLinkCorrectionInput.Type;
+export const PlotlineDagSettleCorrectionInput = Schema.Struct({
+  dagId: Schema.String,
+  taskId: Schema.String,
+  correctionId: VerificationId,
+  state: Schema.Literals(["completed", "failed", "cancelled", "interrupted"]),
+});
+export type PlotlineDagSettleCorrectionInput = typeof PlotlineDagSettleCorrectionInput.Type;
 
 export const PlotlineDagTask = Schema.Struct({
   id: Schema.String,
   title: Schema.String,
   description: Schema.String,
   state: PlotlineTaskState,
+  executionLifecycle: Schema.optional(PlotlineExecutionLifecycle),
   effort: Schema.Number,
   dependsOn: Schema.Array(Schema.String),
   threadId: Schema.NullOr(ThreadId),
@@ -84,6 +141,9 @@ export const PlotlineDagTask = Schema.Struct({
   acceptanceCriteria: Schema.optional(VerificationCriteria),
   verificationAttempts: Schema.optional(
     Schema.Array(PlotlineVerificationAttempt).check(Schema.isMaxLength(100)),
+  ),
+  correctionAttempts: Schema.optional(
+    Schema.Array(PlotlineCorrectionAttempt).check(Schema.isMaxLength(100)),
   ),
   criteriaVersion: Schema.optional(PositiveInt),
 });
@@ -151,6 +211,8 @@ export const PlotlineDagRecordVerificationInput = Schema.Struct({
   dagId: Schema.String,
   taskId: Schema.String,
   attemptId: VerificationId,
+  expectedCriteriaVersion: PositiveInt,
+  expectedRunId: Schema.NullOr(Schema.String),
   verdict: PlotlineVerificationVerdict,
   summary: VerificationSummary,
   criterionResults: VerificationCriterionResults,

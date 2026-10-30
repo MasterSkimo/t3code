@@ -232,6 +232,7 @@ const runAnalysis = (options: {
         pendingRootCandidates: () => Effect.succeed([]),
         completeRootCandidate: () => Effect.void,
         failRootCandidate: () => Effect.void,
+        reconcileCorrectionChild: () => Effect.void,
       }),
       Effect.provideService(ProposalStore.HarnessProposalService, {
         getDefaults: () =>
