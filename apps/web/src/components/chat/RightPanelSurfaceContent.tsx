@@ -87,7 +87,7 @@ export function RightPanelSurfaceContent(props: {
     case "plotline":
       return (
         <Suspense fallback={null}>
-          <PlotlineObserver projection={props.plotlineProjection} />
+          <PlotlineObserver projection={props.plotlineProjection} threadRef={threadRef} />
         </Suspense>
       );
     case "preview":
