@@ -928,37 +928,32 @@ export const makeStore = Effect.gen(function* () {
       criteriaVersion: number,
       expectedRunId: string | null,
     ) {
-      yield* plotline
-        .updateVerifierRequest(projectId, {
-          dagId,
-          taskId,
-          correctionId,
-          state: "failed",
-        })
-        .pipe(Effect.ignore);
-      const latest = yield* plotline
-        .getForProject(projectId, dagId)
-        .pipe(Effect.orElseSucceed(() => null));
+      const latest = yield* plotline.getForProject(projectId, dagId);
       const task = latest?.tasks.find((candidate) => candidate.id === taskId);
       if (
         task &&
         (task.criteriaVersion ?? 1) === criteriaVersion &&
         (task.runId ?? null) === expectedRunId
       )
-        yield* plotline
-          .updateTask(projectId, { dagId, taskId, state: "failed" })
-          .pipe(Effect.ignore);
+        yield* plotline.updateTask(projectId, { dagId, taskId, state: "failed" });
+      yield* plotline.updateVerifierRequest(projectId, {
+        dagId,
+        taskId,
+        correctionId,
+        state: "failed",
+      });
     },
   );
   const recoverVerifierRequests = Effect.fn("HarnessSignificantEventStore.recoverVerifierRequests")(
     function* () {
       if (Option.isNone(threads)) return;
-      const dags = yield* plotline.list({}).pipe(
-        Effect.mapError(
-          () => new HarnessError({ message: "Could not inspect verifier requests." }),
-        ),
-        Effect.catchCause(() => Effect.succeed({ dags: [] })),
-      );
+      const dags = yield* plotline
+        .list({})
+        .pipe(
+          Effect.mapError(
+            () => new HarnessError({ message: "Could not inspect verifier requests." }),
+          ),
+        );
       for (const dag of dags.dags) {
         for (const task of dag.tasks) {
           for (const correction of task.correctionAttempts ?? []) {
@@ -987,7 +982,7 @@ export const makeStore = Effect.gen(function* () {
                       stored.event.payload.status,
                     ),
                 );
-              if (terminal) yield* reconcileVerifierResult(terminal.event).pipe(Effect.ignore);
+              if (terminal) yield* reconcileVerifierResult(terminal.event);
               continue;
             }
             if (decoded.state !== "requested") continue;
@@ -1068,17 +1063,15 @@ export const makeStore = Effect.gen(function* () {
                 stored.event.threadId === verifierChildThreadId,
             );
             if (childRun?.event.type !== "run.created") continue;
-            yield* plotline
-              .updateVerifierRequest(dag.projectId, {
-                dagId: dag.id,
-                taskId: task.id,
-                correctionId: correction.id,
-                state: "dispatched",
-                childTaskId: child.event.payload.id,
-                childThreadId: child.event.payload.childThreadId,
-                childRunId: childRun.event.payload.id,
-              })
-              .pipe(Effect.ignore);
+            yield* plotline.updateVerifierRequest(dag.projectId, {
+              dagId: dag.id,
+              taskId: task.id,
+              correctionId: correction.id,
+              state: "dispatched",
+              childTaskId: child.event.payload.id,
+              childThreadId: child.event.payload.childThreadId,
+              childRunId: childRun.event.payload.id,
+            });
           }
         }
       }
@@ -1095,7 +1088,7 @@ export const makeStore = Effect.gen(function* () {
         payload.status !== "interrupted"
       )
         return;
-      const dags = yield* plotline.list({}).pipe(Effect.orElseSucceed(() => ({ dags: [] })));
+      const dags = yield* plotline.list({});
       for (const dag of dags.dags) {
         for (const task of dag.tasks) {
           for (const correction of task.correctionAttempts ?? []) {
@@ -1203,34 +1196,27 @@ export const makeStore = Effect.gen(function* () {
               // durably reserved the correction (or durably recorded escalation).
               if (reservation === null) continue;
               if (reservation.shouldDispatch) yield* recoverRequestedCorrections();
-              yield* plotline
-                .updateVerifierRequest(dag.projectId, {
-                  dagId: dag.id,
-                  taskId: task.id,
-                  correctionId: correction.id,
-                  state: "completed",
-                })
-                .pipe(Effect.ignore);
-              continue;
-            }
-            // Only a fully passing, current evidence set can complete the task. Inconclusive
-            // evidence stops safely for maintainer review.
-            const settled = yield* plotline
-              .updateTask(dag.projectId, {
-                dagId: dag.id,
-                taskId: task.id,
-                state: evidence.verdict === "pass" ? "done" : "failed",
-              })
-              .pipe(Effect.match({ onFailure: () => false, onSuccess: () => true }));
-            if (!settled) continue;
-            yield* plotline
-              .updateVerifierRequest(dag.projectId, {
+              yield* plotline.updateVerifierRequest(dag.projectId, {
                 dagId: dag.id,
                 taskId: task.id,
                 correctionId: correction.id,
                 state: "completed",
-              })
-              .pipe(Effect.ignore);
+              });
+              continue;
+            }
+            // Only a fully passing, current evidence set can complete the task. Inconclusive
+            // evidence stops safely for maintainer review.
+            yield* plotline.updateTask(dag.projectId, {
+              dagId: dag.id,
+              taskId: task.id,
+              state: evidence.verdict === "pass" ? "done" : "failed",
+            });
+            yield* plotline.updateVerifierRequest(dag.projectId, {
+              dagId: dag.id,
+              taskId: task.id,
+              correctionId: correction.id,
+              state: "completed",
+            });
           }
         }
       }
@@ -1243,7 +1229,13 @@ export const makeStore = Effect.gen(function* () {
           Effect.logWarning("Requested Plotline correction recovery failed; retrying.", { cause }),
         ),
       );
-      yield* recoverVerifierRequests().pipe(Effect.ignoreCause);
+      yield* recoverVerifierRequests().pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Verifier request recovery failed; durable replay will retry.", {
+            cause,
+          }),
+        ),
+      );
       const now = DateTime.formatIso(DateTime.toUtc(yield* DateTime.now));
       const activeIds = [...activeReconciliations];
       const pending = yield* sql<{ readonly event_id: string }>`

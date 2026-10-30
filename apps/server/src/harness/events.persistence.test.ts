@@ -395,6 +395,75 @@ it.effect("replays a passing verifier result across restart without duplicating 
   }).pipe(Effect.provide(layer), Effect.scoped);
 });
 
+it.effect("retries a verifier task write failure from the durable event after restart", () => {
+  const result = makeStoredVerifierResult("pass");
+  const orchestrator = Orchestrator.OrchestratorV2.of({
+    streamStoredEventsFrom: ({ afterSequence = 0 }: { readonly afterSequence?: number } = {}) =>
+      Stream.fromIterable([result].filter((event) => event.sequence > afterSequence)),
+  } as unknown as Orchestrator.OrchestratorV2["Service"]);
+  const providers = ProviderInstanceRegistry.ProviderInstanceRegistry.of({
+    getInstance: () => Effect.void,
+  } as unknown as ProviderInstanceRegistry.ProviderInstanceRegistry["Service"]);
+  const persistence = Layer.mergeAll(SqlitePersistence.layerMemory, NodeCrypto.layer);
+  const layer = Layer.mergeAll(
+    PlotlineDagService.layer.pipe(Layer.provideMerge(persistence)),
+    Layer.succeed(Orchestrator.OrchestratorV2, orchestrator),
+    Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, providers),
+  );
+  return Effect.gen(function* () {
+    const plotline = yield* PlotlineDagService.PlotlineDagService;
+    const { dag } = yield* prepareDispatchedVerifier(plotline, "project:verifier-write-retry");
+    const firstWriteFailed = yield* Deferred.make<void>();
+    let failFirstTaskWrite = true;
+    const transientFailure = PlotlineDagService.PlotlineDagService.of({
+      ...plotline,
+      updateTask: (...args: Parameters<typeof plotline.updateTask>) =>
+        Effect.suspend(() => {
+          if (failFirstTaskWrite) {
+            failFirstTaskWrite = false;
+            return Deferred.succeed(firstWriteFailed, undefined).pipe(
+              Effect.andThen(
+                Effect.fail(new PlotlineDagError({ message: "temporary write failure" })),
+              ),
+            );
+          }
+          return plotline.updateTask(...args);
+        }),
+    });
+
+    yield* Events.makeStore.pipe(
+      Effect.provideService(PlotlineDagService.PlotlineDagService, transientFailure),
+    );
+    yield* Deferred.await(firstWriteFailed);
+    const afterFailure = (yield* plotline.getForProject("project:verifier-write-retry", dag.id))
+      .tasks[0]!;
+    assert.strictEqual(afterFailure.state, "running");
+    assert.strictEqual(afterFailure.correctionAttempts?.[0]?.verifierRequest?.state, "dispatched");
+
+    const recovered = yield* Deferred.make<void>();
+    const recovering = PlotlineDagService.PlotlineDagService.of({
+      ...plotline,
+      updateVerifierRequest: (...args: Parameters<typeof plotline.updateVerifierRequest>) =>
+        plotline
+          .updateVerifierRequest(...args)
+          .pipe(
+            Effect.tap(() =>
+              args[1].state === "completed" ? Deferred.succeed(recovered, undefined) : Effect.void,
+            ),
+          ),
+    });
+    yield* Events.makeStore.pipe(
+      Effect.provideService(PlotlineDagService.PlotlineDagService, recovering),
+    );
+    yield* Deferred.await(recovered);
+    const afterRestart = (yield* plotline.getForProject("project:verifier-write-retry", dag.id))
+      .tasks[0]!;
+    assert.strictEqual(afterRestart.state, "done");
+    assert.strictEqual(afterRestart.correctionAttempts?.[0]?.verifierRequest?.state, "completed");
+    assert.strictEqual(afterRestart.verificationAttempts?.length, 2);
+  }).pipe(Effect.provide(layer), Effect.scoped);
+});
+
 it.effect(
   "reserves and dispatches a bounded correction for a failed automatic verifier, including replay",
   () => {
