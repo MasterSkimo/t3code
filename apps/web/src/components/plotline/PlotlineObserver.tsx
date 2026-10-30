@@ -1,4 +1,6 @@
-import type { OrchestrationV2ThreadProjection } from "@t3tools/contracts";
+import type { OrchestrationV2ThreadProjection, ScopedThreadRef } from "@t3tools/contracts";
+import { plotlineEnvironment } from "../../state/plotline";
+import { useEnvironmentQuery } from "../../state/query";
 import { CheckCircle2, Circle, GitFork, LoaderCircle, XCircle } from "lucide-react";
 import { useState } from "react";
 
@@ -71,11 +73,20 @@ function ObservedNodeCard({
 
 export function PlotlineObserver({
   projection,
+  threadRef,
 }: {
   readonly projection: OrchestrationV2ThreadProjection | null;
+  readonly threadRef: ScopedThreadRef;
 }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const nodes = projectExecutionGraph(projection);
+  const [selectedRunId, setSelectedRunId] = useState("live");
+  const saved = useEnvironmentQuery(plotlineEnvironment.list({
+    environmentId: threadRef.environmentId,
+    input: { threadId: String(threadRef.threadId) },
+  }));
+  const history = saved.data?.dags ?? [];
+  const stored = history.find((dag) => dag.runId === selectedRunId);
+  const nodes = stored?.nodes ?? projectExecutionGraph(projection);
   const graph = layoutExecutionGraph(nodes);
   const coordinates = new Map(graph.positions.map((item) => [item.node.id, item]));
   const selected = nodes.find((node) => node.id === selectedId) ?? null;
@@ -94,10 +105,34 @@ export function PlotlineObserver({
               <p className="text-[11px] text-muted-foreground">Execution observer · read only</p>
             </div>
           </div>
-          <span className="rounded-full border border-border px-2 py-1 text-[10px] text-muted-foreground">
-            Live projection
-          </span>
+          <div className="flex shrink-0 items-center gap-2">
+            <select
+              aria-label="Plotline run history"
+              value={selectedRunId}
+              onChange={(event) => {
+                setSelectedRunId(event.target.value);
+                setSelectedId(null);
+              }}
+              className="max-w-32 rounded-md border border-border bg-background px-2 py-1 text-[11px]"
+            >
+              <option value="live">Live</option>
+              {history.map((dag) => (
+                <option key={dag.runId} value={dag.runId}>
+                  {dag.title} · {dag.runId.slice(-16)}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={saved.refresh}
+              className="rounded-md border border-border px-2 py-1 text-[11px]"
+              title="Reload saved DAGs"
+            >
+              Reload
+            </button>
+          </div>
         </div>
+        {saved.error ? <p role="status" className="mt-2 text-xs text-rose-600">{saved.error}</p> : null}
         {nodes.length > 0 ? (
           <div className="mt-3 flex flex-wrap gap-3 text-[11px] text-muted-foreground">
             <span>{nodes.length - 1} delegated</span>
