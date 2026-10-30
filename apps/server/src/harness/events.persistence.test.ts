@@ -15,11 +15,27 @@ import * as PlotlineDagService from "../plotline/PlotlineDagService.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
+import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as Events from "./events.ts";
 
 const decodeEvent = Schema.decodeUnknownSync(OrchestrationV2DomainEvent);
 const at = DateTime.makeUnsafe("2026-10-27T12:00:00.000Z");
+const defaultRecoveryDependencies = Layer.mergeAll(
+  Layer.succeed(
+    EventSink.EventSinkV2,
+    EventSink.EventSinkV2.of({
+      readByCommandId: () => Stream.empty,
+      stream: () => Stream.empty,
+    } as unknown as EventSink.EventSinkV2["Service"]),
+  ),
+  Layer.succeed(
+    ThreadManagementService.ThreadManagementService,
+    ThreadManagementService.ThreadManagementService.of({
+      dispatch: () => Effect.die("Unexpected verifier dispatch"),
+    } as unknown as ThreadManagementService.ThreadManagementService["Service"]),
+  ),
+);
 
 const makeStoredRun = (index: number) => ({
   sequence: index,
@@ -280,6 +296,89 @@ const verifierDispatchResult = {
   ],
 } as unknown as Orchestrator.OrchestratorV2DispatchResult;
 
+it.effect("retries a failed verifier receipt lookup before dispatching the same command", () => {
+  let lookupCount = 0;
+  const commandIds: string[] = [];
+  return Effect.gen(function* () {
+    const retryPersisted = yield* Deferred.make<void>();
+    const dispatchedPersisted = yield* Deferred.make<void>();
+    const plotline = yield* PlotlineDagService.PlotlineDagService;
+    const { dag } = yield* prepareRequestedVerifier(plotline, "project:receipt-retry");
+    const observingPlotline = PlotlineDagService.PlotlineDagService.of({
+      ...plotline,
+      updateVerifierRequest: (...args: Parameters<typeof plotline.updateVerifierRequest>) =>
+        plotline
+          .updateVerifierRequest(...args)
+          .pipe(
+            Effect.tap(() =>
+              args[1].state === "dispatched"
+                ? Deferred.succeed(dispatchedPersisted, undefined)
+                : args[1].diagnostic?.includes("receipt lookup failed")
+                  ? Deferred.succeed(retryPersisted, undefined)
+                  : Effect.void,
+            ),
+          ),
+    });
+    const sink = EventSink.EventSinkV2.of({
+      readByCommandId: ({ commandId }: { readonly commandId: string }) => {
+        commandIds.push(commandId);
+        lookupCount += 1;
+        return lookupCount === 1 ? Stream.fail(new Error("receipt unavailable")) : Stream.empty;
+      },
+      stream: () => Stream.empty,
+    } as unknown as EventSink.EventSinkV2["Service"]);
+    let dispatches = 0;
+    const threads = ThreadManagementService.ThreadManagementService.of({
+      dispatch: (command: { readonly commandId: string }) => {
+        dispatches += 1;
+        commandIds.push(command.commandId);
+        return Effect.succeed(verifierDispatchResult);
+      },
+    } as unknown as ThreadManagementService.ThreadManagementService["Service"]);
+    yield* Events.makeStore.pipe(
+      Effect.provideService(PlotlineDagService.PlotlineDagService, observingPlotline),
+      Effect.provideService(EventSink.EventSinkV2, sink),
+      Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
+    );
+    yield* Deferred.await(retryPersisted);
+    const pending = (yield* plotline.getForProject("project:receipt-retry", dag.id)).tasks[0]!
+      .correctionAttempts?.[0]?.verifierRequest;
+    assert.strictEqual(pending?.state, "requested");
+    assert.strictEqual(pending?.retryCount, 1);
+    assert.include(pending?.diagnostic ?? "", "receipt lookup failed");
+    assert.strictEqual(dispatches, 0);
+    yield* TestClock.adjust("1 second");
+    yield* Deferred.await(dispatchedPersisted);
+    const request = (yield* plotline.getForProject("project:receipt-retry", dag.id)).tasks[0]!
+      .correctionAttempts?.[0]?.verifierRequest;
+    assert.strictEqual(request?.state, "dispatched");
+    assert.strictEqual(request?.childTaskId, "verifier-child");
+    assert.strictEqual(dispatches, 1);
+    assert.isTrue(commandIds.every((id) => id === request?.commandId));
+  }).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        PlotlineDagService.layer.pipe(
+          Layer.provideMerge(Layer.mergeAll(SqlitePersistence.layerMemory, NodeCrypto.layer)),
+        ),
+        Layer.succeed(
+          Orchestrator.OrchestratorV2,
+          Orchestrator.OrchestratorV2.of({
+            streamStoredEventsFrom: () => Stream.empty,
+          } as unknown as Orchestrator.OrchestratorV2["Service"]),
+        ),
+        Layer.succeed(
+          ProviderInstanceRegistry.ProviderInstanceRegistry,
+          ProviderInstanceRegistry.ProviderInstanceRegistry.of({
+            getInstance: () => Effect.void,
+          } as unknown as ProviderInstanceRegistry.ProviderInstanceRegistry["Service"]),
+        ),
+      ),
+    ),
+    Effect.scoped,
+  );
+});
+
 it.effect(
   "keeps verifier requests replayable after transient dispatch failure without new events",
   () => {
@@ -361,7 +460,7 @@ it.effect(
       assert.strictEqual(request?.state, "dispatched");
       assert.strictEqual(calls, 2, "recovery retries without waiting for an unrelated event");
       assert.deepStrictEqual(commandIds, [request?.commandId, request?.commandId]);
-    }).pipe(Effect.provide(layer), Effect.scoped);
+    }).pipe(Effect.provide(Layer.mergeAll(defaultRecoveryDependencies, layer)), Effect.scoped);
   },
 );
 
@@ -445,7 +544,7 @@ it.effect("rotates a legacy rejected verifier command before retrying", () => {
     assert.strictEqual(calls, 2, "recovery retries without waiting for an unrelated event");
     assert.notStrictEqual(commandIds[0], commandIds[1]);
     assert.strictEqual(commandIds[1], request?.commandId);
-  }).pipe(Effect.provide(layer), Effect.scoped);
+  }).pipe(Effect.provide(Layer.mergeAll(defaultRecoveryDependencies, layer)), Effect.scoped);
 });
 
 it.effect("durably escalates a permanently rejected verifier dispatch", () => {
@@ -503,7 +602,7 @@ it.effect("durably escalates a permanently rejected verifier dispatch", () => {
       .tasks[0]!;
     assert.strictEqual(task.state, "failed");
     assert.strictEqual(task.correctionAttempts?.[0]?.verifierRequest?.state, "failed");
-  }).pipe(Effect.provide(layer), Effect.scoped);
+  }).pipe(Effect.provide(Layer.mergeAll(defaultRecoveryDependencies, layer)), Effect.scoped);
 });
 
 it.effect(
@@ -584,7 +683,7 @@ it.effect(
       SELECT COUNT(*) AS count FROM harness_significant_events WHERE delivery_status = 'pending'
     `;
       assert.strictEqual(pending?.count, 0);
-    }).pipe(Effect.provide(layer));
+    }).pipe(Effect.provide(Layer.mergeAll(defaultRecoveryDependencies, layer)));
   },
 );
 
@@ -671,7 +770,7 @@ it.effect("reconciles persisted OpenCode run events without verifying Plotline c
       1,
       "replaying duplicate stored run events must not duplicate reconciliation delivery",
     );
-  }).pipe(Effect.provide(layer), Effect.scoped);
+  }).pipe(Effect.provide(Layer.mergeAll(defaultRecoveryDependencies, layer)), Effect.scoped);
 });
 
 it.effect("retries inconclusive verifier output without recording an acceptance failure", () => {
@@ -699,7 +798,7 @@ it.effect("retries inconclusive verifier output without recording an acceptance 
     assert.strictEqual(task.verificationAttempts?.length, 1);
     assert.strictEqual(task.correctionAttempts?.[0]?.verifierRequest?.state, "requested");
     assert.strictEqual(task.correctionAttempts?.[0]?.verifierRequest?.retryCount, 1);
-  }).pipe(Effect.provide(layer), Effect.scoped);
+  }).pipe(Effect.provide(Layer.mergeAll(defaultRecoveryDependencies, layer)), Effect.scoped);
 });
 
 it.effect("atomically escalates only the run associated with the failed verifier", () => {
@@ -748,7 +847,7 @@ it.effect("atomically escalates only the run associated with the failed verifier
       diagnostic: "Verifier interrupted",
     });
     assert.strictEqual(replay.tasks[0]!.state, "running");
-  }).pipe(Effect.provide(layer), Effect.scoped);
+  }).pipe(Effect.provide(Layer.mergeAll(defaultRecoveryDependencies, layer)), Effect.scoped);
 });
 
 it.effect("replays a passing verifier result across restart without duplicating settlement", () => {
@@ -788,7 +887,7 @@ it.effect("replays a passing verifier result across restart without duplicating 
     assert.strictEqual(replayed.state, "done");
     assert.strictEqual(replayed.verificationAttempts?.length, 2);
     assert.strictEqual(replayed.correctionAttempts?.[0]?.id, correctionId);
-  }).pipe(Effect.provide(layer), Effect.scoped);
+  }).pipe(Effect.provide(Layer.mergeAll(defaultRecoveryDependencies, layer)), Effect.scoped);
 });
 
 it.effect("replays the same verifier evidence after a durable persistence failure", () => {
@@ -868,7 +967,7 @@ it.effect("replays the same verifier evidence after a durable persistence failur
     assert.strictEqual(afterRestart.state, "done");
     assert.strictEqual(afterRestart.correctionAttempts?.[0]?.verifierRequest?.state, "completed");
     assert.strictEqual(afterRestart.verificationAttempts?.length, 2);
-  }).pipe(Effect.provide(layer), Effect.scoped);
+  }).pipe(Effect.provide(Layer.mergeAll(defaultRecoveryDependencies, layer)), Effect.scoped);
 });
 
 it.effect("retries a verifier task write failure from the durable event after restart", () => {
@@ -937,7 +1036,7 @@ it.effect("retries a verifier task write failure from the durable event after re
     assert.strictEqual(afterRestart.state, "done");
     assert.strictEqual(afterRestart.correctionAttempts?.[0]?.verifierRequest?.state, "completed");
     assert.strictEqual(afterRestart.verificationAttempts?.length, 2);
-  }).pipe(Effect.provide(layer), Effect.scoped);
+  }).pipe(Effect.provide(Layer.mergeAll(defaultRecoveryDependencies, layer)), Effect.scoped);
 });
 
 it.effect(
@@ -1002,7 +1101,7 @@ it.effect(
       yield* TestClock.adjust("1 second");
       const replayed = yield* plotline.getForProject("project:auto-correction", dag.id);
       assert.strictEqual(replayed.tasks[0]!.correctionAttempts?.length, 2);
-    }).pipe(Effect.provide(layer), Effect.scoped);
+    }).pipe(Effect.provide(Layer.mergeAll(defaultRecoveryDependencies, layer)), Effect.scoped);
   },
 );
 
@@ -1052,7 +1151,7 @@ it.effect(
       assert.strictEqual(replayed.tasks[0]!.state, "running");
       assert.strictEqual(replayed.tasks[0]!.runId, "run:newer");
       assert.strictEqual(replayed.tasks[0]!.correctionAttempts?.length, 1);
-    }).pipe(Effect.provide(layer), Effect.scoped);
+    }).pipe(Effect.provide(Layer.mergeAll(defaultRecoveryDependencies, layer)), Effect.scoped);
   },
 );
 
@@ -1253,7 +1352,7 @@ it.effect(
           .correctionAttempts?.[0]?.state,
         "cancelled",
       );
-    }).pipe(Effect.provide(layer), Effect.scoped);
+    }).pipe(Effect.provide(Layer.mergeAll(defaultRecoveryDependencies, layer)), Effect.scoped);
   },
 );
 
@@ -1403,7 +1502,7 @@ it.effect("reconciles an acknowledged terminal correction child after it is link
       WHERE event_id = 'subagent-event-unrelated'
     `;
     assert.strictEqual(stillUnlinked?.delivery_attempts, 1);
-  }).pipe(Effect.provide(layer), Effect.scoped);
+  }).pipe(Effect.provide(Layer.mergeAll(defaultRecoveryDependencies, layer)), Effect.scoped);
 });
 it.effect("isolates OpenCode reconciliation failures and persists bounded retry visibility", () => {
   let attempts = 0;
@@ -1452,7 +1551,7 @@ it.effect("isolates OpenCode reconciliation failures and persists bounded retry 
         failure_detail: "Plotline unavailable",
       },
     ]);
-  }).pipe(Effect.provide(layer), Effect.scoped);
+  }).pipe(Effect.provide(Layer.mergeAll(defaultRecoveryDependencies, layer)), Effect.scoped);
 });
 
 it.effect("replays a pending reconciliation after restart and recovers transient failure", () => {
@@ -1498,7 +1597,7 @@ it.effect("replays a pending reconciliation after restart and recovers transient
     ]);
     yield* Events.makeStore;
     assert.strictEqual(attempts, 2, "completed outbox entries must not be delivered twice");
-  }).pipe(Effect.provide(layer), Effect.scoped);
+  }).pipe(Effect.provide(Layer.mergeAll(defaultRecoveryDependencies, layer)), Effect.scoped);
 });
 
 it.effect("reuses the accepted correction receipt after restart before local linking", () => {
@@ -1609,7 +1708,7 @@ it.effect("reuses the accepted correction receipt after restart before local lin
         yield* Events.makeStore;
         yield* Deferred.await(crashAfterAcceptance!);
       }),
-    ).pipe(Effect.provide(layer));
+    ).pipe(Effect.provide(Layer.mergeAll(defaultRecoveryDependencies, layer)));
     const firstRun = yield* Effect.forkChild(firstStore);
     yield* Deferred.await(crashAfterAcceptance);
     yield* Fiber.interrupt(firstRun);
@@ -1644,7 +1743,7 @@ it.effect("reuses the accepted correction receipt after restart before local lin
     assert.strictEqual(task.correctionAttempts?.[0]?.state, "running");
     assert.strictEqual(task.correctionAttempts?.[0]?.childThreadId, "thread_correction_child");
     assert.strictEqual(task.correctionAttempts?.[0]?.childRunId, "run:correction-child");
-  }).pipe(Effect.provide(layer), Effect.scoped);
+  }).pipe(Effect.provide(Layer.mergeAll(defaultRecoveryDependencies, layer)), Effect.scoped);
 });
 
 it.effect("keeps retrying an exhausted delivery and clears its failure after recovery", () => {
@@ -1705,7 +1804,7 @@ it.effect("keeps retrying an exhausted delivery and clears its failure after rec
       });
       yield* Events.makeStore;
       assert.strictEqual(attempts, 4, "completed deliveries must remain idempotent across replay");
-    }).pipe(Effect.provide(layer));
+    }).pipe(Effect.provide(Layer.mergeAll(defaultRecoveryDependencies, layer)));
   }).pipe(Effect.scoped);
 });
 
@@ -1745,6 +1844,7 @@ it.effect("does not block startup or unrelated ingestion on a slow reconciliatio
       getInstance: () => Effect.succeed({ driverKind: "opencode" }),
     } as unknown as ProviderInstanceRegistry.ProviderInstanceRegistry["Service"]);
     const dependencies = Layer.mergeAll(
+      defaultRecoveryDependencies,
       SqlitePersistence.layerMemory,
       Layer.succeed(Orchestrator.OrchestratorV2, orchestrator),
       Layer.succeed(PlotlineDagService.PlotlineDagService, plotline),
@@ -1842,5 +1942,5 @@ it.effect("keeps deferred root candidates durable outside the bounded signal sna
       SELECT status, delivery_attempts FROM harness_root_candidates WHERE event_id = ${event.id}
     `;
     assert.deepStrictEqual(rows, [{ status: "failed", delivery_attempts: 3 }]);
-  }).pipe(Effect.provide(layer));
+  }).pipe(Effect.provide(Layer.mergeAll(defaultRecoveryDependencies, layer)));
 });

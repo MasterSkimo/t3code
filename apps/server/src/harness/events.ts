@@ -8,10 +8,10 @@ import {
   type PlotlineDag,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
@@ -30,7 +30,6 @@ import { makeLoopGuardCollector, type LoopGuardIntervention } from "./loopGuard.
 const UnknownJsonString = Schema.fromJsonString(Schema.Unknown);
 const decodeJson = Schema.decodeUnknownEffect(UnknownJsonString);
 const encodeJson = Schema.encodeSync(UnknownJsonString);
-const decodeVerifierRequest = Schema.decodeUnknownEffect(PlotlineVerifierRequest);
 const decodeVerifierAttempt = Schema.decodeEffect(PlotlineDagRecordVerificationInput);
 const VerifierEvidence = Schema.Struct({
   verdict: Schema.Literals(["pass", "fail", "inconclusive"]),
@@ -494,18 +493,8 @@ export function makeSignificantEventCollector(): SignificantEventCollector {
 
 export const makeStore = Effect.gen(function* () {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
-  const threads = yield* Effect.serviceOption(
-    ThreadManagementService.ThreadManagementService,
-  ) as Effect.Effect<
-    Option.Option<ThreadManagementService.ThreadManagementService["Service"]>,
-    never,
-    never
-  >;
-  const eventSink = yield* Effect.serviceOption(EventSink.EventSinkV2) as Effect.Effect<
-    Option.Option<EventSink.EventSinkV2["Service"]>,
-    never,
-    never
-  >;
+  const threads = yield* ThreadManagementService.ThreadManagementService;
+  const eventSink = yield* EventSink.EventSinkV2;
   const plotline = yield* PlotlineDagService.PlotlineDagService;
   const providers = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
   const sql = yield* SqlClient.SqlClient;
@@ -972,7 +961,6 @@ export const makeStore = Effect.gen(function* () {
   );
   const recoverVerifierRequests = Effect.fn("HarnessSignificantEventStore.recoverVerifierRequests")(
     function* () {
-      if (Option.isNone(threads)) return;
       const dags = yield* plotline
         .list({})
         .pipe(
@@ -983,11 +971,7 @@ export const makeStore = Effect.gen(function* () {
       for (const dag of dags.dags) {
         for (const task of dag.tasks) {
           for (const correction of task.correctionAttempts ?? []) {
-            const decoded = correction.verifierRequest
-              ? yield* decodeVerifierRequest(correction.verifierRequest).pipe(
-                  Effect.orElseSucceed(() => null),
-                )
-              : null;
+            const decoded = correction.verifierRequest;
             if (!decoded) continue;
             if (decoded.state === "failed") {
               yield* failVerifierRequest(
@@ -1007,9 +991,9 @@ export const makeStore = Effect.gen(function* () {
             )
               continue;
             if (decoded.state === "dispatched") {
-              if (Option.isNone(eventSink) || decoded.childTaskId === undefined) continue;
+              if (decoded.childTaskId === undefined) continue;
               const existingEvents = yield* Stream.runCollect(
-                eventSink.value.stream({
+                eventSink.stream({
                   threadId: decoded.parentThreadId,
                   eventType: "subagent.updated",
                 }),
@@ -1062,14 +1046,27 @@ export const makeStore = Effect.gen(function* () {
               interactionMode: decoded.interactionMode,
               completionWake: "always" as const,
             };
-            const previousReceipt = Option.isSome(eventSink)
-              ? yield* Stream.runCollect(
-                  eventSink.value.readByCommandId({ commandId: CommandId.make(decoded.commandId) }),
-                ).pipe(Effect.orElseSucceed(() => null))
-              : null;
-            if (previousReceipt === null && Option.isSome(eventSink)) continue;
-            if (decoded.promptVersion === undefined && (previousReceipt?.length ?? 0) === 0) {
-              if (Option.isNone(eventSink)) continue;
+            const previousReceipt = yield* Stream.runCollect(
+              eventSink.readByCommandId({ commandId: CommandId.make(decoded.commandId) }),
+            ).pipe(
+              Effect.match({
+                onFailure: (cause) => ({ cause }),
+                onSuccess: (events) => ({ events }),
+              }),
+            );
+            if ("cause" in previousReceipt) {
+              yield* retryVerifierRequest(
+                dag.id,
+                dag.projectId,
+                task.id,
+                correction.id,
+                decoded,
+                "Verifier receipt lookup failed; retrying.",
+              );
+              continue;
+            }
+            const previousEvents = previousReceipt.events;
+            if (decoded.promptVersion === undefined && previousEvents.length === 0) {
               yield* plotline.updateVerifierRequest(dag.projectId, {
                 dagId: dag.id,
                 taskId: task.id,
@@ -1082,9 +1079,9 @@ export const makeStore = Effect.gen(function* () {
               continue;
             }
             let dispatched =
-              previousReceipt !== null && previousReceipt.length > 0
-                ? { ok: true as const, result: { storedEvents: previousReceipt } }
-                : yield* threads.value.dispatch(command).pipe(
+              previousEvents.length > 0
+                ? { ok: true as const, result: { storedEvents: previousEvents } }
+                : yield* threads.dispatch(command).pipe(
                     Effect.match({
                       onFailure: (cause) => ({ ok: false as const, cause }),
                       onSuccess: (result) => ({ ok: true as const, result }),
@@ -1095,13 +1092,28 @@ export const makeStore = Effect.gen(function* () {
               typeof dispatched.cause === "object" &&
               dispatched.cause !== null &&
               "_tag" in dispatched.cause &&
-              dispatched.cause._tag === "OrchestratorCommandIdConflictError" &&
-              Option.isSome(eventSink)
+              dispatched.cause._tag === "OrchestratorCommandIdConflictError"
             ) {
-              const receipt = yield* Stream.runCollect(
-                eventSink.value.readByCommandId({ commandId: CommandId.make(decoded.commandId) }),
-              ).pipe(Effect.orElseSucceed(() => null));
-              if (receipt === null) continue;
+              const lookup = yield* Stream.runCollect(
+                eventSink.readByCommandId({ commandId: CommandId.make(decoded.commandId) }),
+              ).pipe(
+                Effect.match({
+                  onFailure: (cause) => ({ cause }),
+                  onSuccess: (events) => ({ events }),
+                }),
+              );
+              if ("cause" in lookup) {
+                yield* retryVerifierRequest(
+                  dag.id,
+                  dag.projectId,
+                  task.id,
+                  correction.id,
+                  decoded,
+                  "Verifier receipt lookup failed; retrying.",
+                );
+                continue;
+              }
+              const receipt = lookup.events;
               if (receipt.length > 0) {
                 if (
                   !receipt.some(
@@ -1187,11 +1199,9 @@ export const makeStore = Effect.gen(function* () {
               continue;
             }
             const dispatchedResult = dispatched.result;
-            const receipt = Option.isSome(eventSink)
-              ? yield* Stream.runCollect(
-                  eventSink.value.readByCommandId({ commandId: CommandId.make(decoded.commandId) }),
-                ).pipe(Effect.orElseSucceed(() => dispatchedResult.storedEvents))
-              : dispatchedResult.storedEvents;
+            const receipt = yield* Stream.runCollect(
+              eventSink.readByCommandId({ commandId: CommandId.make(decoded.commandId) }),
+            ).pipe(Effect.orElseSucceed(() => dispatchedResult.storedEvents));
             const storedEvents =
               receipt.length === 0 ? dispatchedResult.storedEvents : [...receipt];
             const child = storedEvents.find(
@@ -1514,9 +1524,12 @@ export const makeStore = Effect.gen(function* () {
             Effect.timeoutOrElse({ duration: "1 second", orElse: () => Effect.void }),
           );
         } else {
-          const delay = Math.max(
-            1,
-            Date.parse(next.next_attempt_at) - DateTime.toEpochMillis(yield* DateTime.now),
+          const delay = Math.min(
+            1_000,
+            Math.max(
+              1,
+              Date.parse(next.next_attempt_at) - DateTime.toEpochMillis(yield* DateTime.now),
+            ),
           );
           yield* Queue.take(reconciliationWake).pipe(
             Effect.timeoutOrElse({ duration: delay, orElse: () => Effect.void }),
@@ -1529,10 +1542,14 @@ export const makeStore = Effect.gen(function* () {
       });
     }),
   ).pipe(
-    Effect.tapCause((cause) =>
-      Effect.logWarning("OpenCode run reconciliation worker hit a storage error; retrying.", {
-        cause,
-      }),
+    Effect.catchCauseIf(
+      (cause) => !Cause.hasInterruptsOnly(cause),
+      (cause) =>
+        Effect.logWarning("OpenCode run reconciliation worker stopped; retrying.", { cause }).pipe(
+          Effect.andThen(
+            Effect.fail(new HarnessError({ message: "Reconciliation worker failed." })),
+          ),
+        ),
     ),
     Effect.retry({ schedule: Schedule.exponential("1 second") }),
     Effect.forkScoped({ startImmediately: true }),
