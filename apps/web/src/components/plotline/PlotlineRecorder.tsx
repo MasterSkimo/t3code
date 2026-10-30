@@ -1,5 +1,7 @@
 import {
   AuthOrchestrationOperateScope,
+  type EnvironmentId,
+  type PlotlineSaveInput,
   type OrchestrationV2ThreadProjection,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
@@ -29,8 +31,8 @@ export function PlotlineRecorder({ threadRef, projection }: Props) {
     reportDefect: false,
   });
   const persist = useEffectEvent((draft: {
-    readonly environmentId: ScopedThreadRef["environmentId"];
-    readonly input: Parameters<typeof plotlineEnvironment.save>[0]["input"];
+    readonly environmentId: EnvironmentId;
+    readonly input: PlotlineSaveInput;
   }) => {
     void save(draft);
   });
