@@ -121,6 +121,7 @@ export const PlotlineDagUpdateVerifierRequestInput = Schema.Struct({
   persistenceFailure: Schema.optional(Schema.Boolean),
   replaceCommandId: Schema.optional(Schema.Boolean),
   refreshContext: Schema.optional(Schema.Boolean),
+  expectedState: Schema.optional(PlotlineVerifierRequestState),
   expectedPersistenceFailures: Schema.optional(Schema.Number),
   expectedRetryCount: Schema.optional(Schema.Number),
   expectedCommandId: Schema.optional(Schema.String),

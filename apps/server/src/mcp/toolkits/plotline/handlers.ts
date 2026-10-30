@@ -13,6 +13,7 @@ import {
   type Caller,
 } from "../../threadAccess.ts";
 import { PlotlineToolkit } from "./tools.ts";
+import { correctionPrompt } from "../../../plotline/correctionPrompt.ts";
 
 const assertWritablePlanMode = (context: Caller) =>
   context.limits.interactionMode === "plan"
@@ -150,15 +151,11 @@ const layer = McpToolAccess.toLayer(PlotlineToolkit, {
         });
 
       const task = dag.tasks.find((candidate) => candidate.id === input.taskId);
-      const failedCriteria = input.criterionResults
-        .filter((result) => result.verdict === "fail")
-        .map((result) => {
-          const criterion = task?.acceptanceCriteria?.find(
-            (item) => item.id === result.criterionId,
-          );
-          return `- ${result.criterionId}: ${criterion?.description ?? "Acceptance criterion"}\n  Evidence: ${result.evidence}`;
-        })
-        .join("\n");
+      if (!task)
+        return yield* new OrchestratorMcpFailure({
+          code: "orchestration_error",
+          message: "Verified task was not found in the returned DAG.",
+        });
       const dispatchInput = {
         type: "delegated_task.request" as const,
         createdBy: "agent" as const,
@@ -167,13 +164,12 @@ const layer = McpToolAccess.toLayer(PlotlineToolkit, {
         parentRunId: parentRun.id,
         parentNodeId: parentRun.rootNodeId,
         title: `Correct Plotline task ${input.taskId}`,
-        task: [
-          `Correct native Plotline task ${input.taskId} (DAG ${input.dagId}).`,
-          `This is correction cycle ${(task?.correctionAttempts?.length ?? 0) + 1} of 3. Preserve the task's intent and make the narrowest appropriate correction.`,
-          `Failed verifier summary: ${input.summary}`,
-          `Failed criteria:\n${failedCriteria || "No criterion-specific failure evidence was supplied."}`,
-          "Do not claim acceptance. The parent will independently verify the resulting run against the current acceptance criteria.",
-        ].join("\n\n"),
+        task: correctionPrompt({
+          task,
+          workspace: dag.workspace,
+          summary: input.summary,
+          criterionResults: input.criterionResults,
+        }),
         modelSelection: context.caller.modelSelection,
         runtimeMode: context.caller.runtimeMode,
         interactionMode: context.caller.interactionMode,

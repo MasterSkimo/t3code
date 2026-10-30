@@ -1316,6 +1316,7 @@ const make = Effect.gen(function* () {
         const request = current.verifierRequest;
         if (!request) return yield* dagError("Verifier request was not found.", dag.id);
         if (
+          (input.expectedState !== undefined && input.expectedState !== request.state) ||
           (input.expectedPersistenceFailures !== undefined &&
             input.expectedPersistenceFailures !== (request.persistenceFailures ?? 0)) ||
           (input.expectedRetryCount !== undefined &&

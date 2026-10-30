@@ -188,6 +188,10 @@ export interface EventSinkV2Shape {
     /** Bound RPC subscribers; internal workers must not drop their subscription under load. */
     readonly bounded?: boolean;
   }) => Stream.Stream<OrchestrationV2StoredEvent, EventSinkV2Error>;
+  readonly readPersisted: (input: {
+    readonly threadId: ThreadId;
+    readonly eventType: OrchestrationV2DomainEvent["type"];
+  }) => Stream.Stream<OrchestrationV2StoredEvent, EventSinkV2Error>;
   readonly latestSequence: (input?: {
     readonly threadId?: ThreadId;
   }) => Effect.Effect<number, EventSinkV2Error>;
@@ -977,6 +981,16 @@ const layerBase: Layer.Layer<
               }),
           ),
         ),
+      readPersisted: (input) =>
+        Stream.unwrap(
+          eventStore
+            .latestSequence()
+            .pipe(
+              Effect.map((throughSequence) =>
+                catchUp({ ...input, afterSequence: 0, throughSequence }),
+              ),
+            ),
+        ).pipe(Stream.mapError((cause) => new EventSinkStreamError({ cause }))),
       latestSequence: (input) =>
         eventStore.latestSequence(input).pipe(
           Effect.mapError(

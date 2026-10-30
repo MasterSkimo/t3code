@@ -124,6 +124,7 @@ it.effect(
   "creates, reads, incrementally updates, and publishes a native DAG through the MCP tools",
   () => {
     const correctionCommandIds: string[] = [];
+    const correctionTasks: string[] = [];
     return Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* sql`CREATE TABLE plotline_dags (dag_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, payload_json TEXT NOT NULL, updated_at TEXT NOT NULL)`;
@@ -173,7 +174,13 @@ it.effect(
         dagId,
         tasks: [
           { id: "prepare", title: "Prepare", description: "", effort: 1, dependsOn: [] },
-          { id: "upgrade", title: "Upgrade", description: "", effort: 2, dependsOn: ["prepare"] },
+          {
+            id: "upgrade",
+            title: "Upgrade",
+            description: "Fix dependency behavior",
+            effort: 2,
+            dependsOn: ["prepare"],
+          },
         ],
       });
       expect(addedResult.at(-1)?.result).toMatchObject({
@@ -294,6 +301,11 @@ it.effect(
       });
       expect(correctionCommandIds).toHaveLength(1);
       expect(correctionCommandIds[0]).toMatch(/^plotline-correction-cor_/);
+      expect(correctionTasks[0]).toContain("Fix dependency behavior");
+      expect(correctionTasks[0]).toContain("Behavior works");
+      expect(correctionTasks[0]).toContain("Assertion failed.");
+      expect(correctionTasks[0]).toContain("Do not use Plotline MCP tools");
+      expect(correctionTasks[0]).not.toContain(dagId);
       const stopped = yield* call("plotline_dag_record_verification", {
         dagId,
         taskId: "upgrade",
@@ -360,6 +372,8 @@ it.effect(
                 dispatch: (command) =>
                   Effect.sync(() => {
                     correctionCommandIds.push(command.commandId);
+                    if (command.type === "delegated_task.request")
+                      correctionTasks.push(command.task);
                     return {
                       storedEvents: [
                         {

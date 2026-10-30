@@ -27,6 +27,7 @@ const defaultRecoveryDependencies = Layer.mergeAll(
     EventSink.EventSinkV2.of({
       readByCommandId: () => Stream.empty,
       stream: () => Stream.empty,
+      readPersisted: () => Stream.empty,
     } as unknown as EventSink.EventSinkV2["Service"]),
   ),
   Layer.succeed(
@@ -296,6 +297,239 @@ const verifierDispatchResult = {
   ],
 } as unknown as Orchestrator.OrchestratorV2DispatchResult;
 
+it.effect("reconciles a persisted verifier result without waiting for the live stream", () =>
+  Effect.gen(function* () {
+    const completed = yield* Deferred.make<void>();
+    const plotline = yield* PlotlineDagService.PlotlineDagService;
+    const { dag } = yield* prepareDispatchedVerifier(plotline, "project:verifier-restart");
+    const observingPlotline = PlotlineDagService.PlotlineDagService.of({
+      ...plotline,
+      updateVerifierRequest: (...args: Parameters<typeof plotline.updateVerifierRequest>) =>
+        plotline
+          .updateVerifierRequest(...args)
+          .pipe(
+            Effect.tap(() =>
+              args[1].state === "completed" ? Deferred.succeed(completed, undefined) : Effect.void,
+            ),
+          ),
+    });
+    const sink = EventSink.EventSinkV2.of({
+      readByCommandId: () => Stream.empty,
+      stream: () => Stream.never,
+      readPersisted: () => Stream.make(makeStoredVerifierResult("pass")),
+    } as unknown as EventSink.EventSinkV2["Service"]);
+    yield* Events.makeStore.pipe(
+      Effect.provideService(PlotlineDagService.PlotlineDagService, observingPlotline),
+      Effect.provideService(EventSink.EventSinkV2, sink),
+    );
+    yield* Deferred.await(completed);
+    const task = (yield* plotline.getForProject("project:verifier-restart", dag.id)).tasks[0]!;
+    assert.strictEqual(task.state, "done");
+  }).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        defaultRecoveryDependencies,
+        PlotlineDagService.layer.pipe(
+          Layer.provideMerge(Layer.mergeAll(SqlitePersistence.layerMemory, NodeCrypto.layer)),
+        ),
+        Layer.succeed(
+          Orchestrator.OrchestratorV2,
+          Orchestrator.OrchestratorV2.of({
+            streamStoredEventsFrom: () => Stream.empty,
+          } as unknown as Orchestrator.OrchestratorV2["Service"]),
+        ),
+        Layer.succeed(
+          ProviderInstanceRegistry.ProviderInstanceRegistry,
+          ProviderInstanceRegistry.ProviderInstanceRegistry.of({
+            getInstance: () => Effect.void,
+          } as unknown as ProviderInstanceRegistry.ProviderInstanceRegistry["Service"]),
+        ),
+      ),
+    ),
+    Effect.scoped,
+  ),
+);
+
+it.effect("recovers a verifier despite a blocked correction and revisits its persisted retry", () =>
+  Effect.gen(function* () {
+    const correctionStarted = yield* Deferred.make<void>();
+    const retryPersisted = yield* Deferred.make<void>();
+    const dispatchedPersisted = yield* Deferred.make<void>();
+    const plotline = yield* PlotlineDagService.PlotlineDagService;
+    const { dag } = yield* prepareRequestedVerifier(plotline, "project:isolated-recovery");
+    const observingPlotline = PlotlineDagService.PlotlineDagService.of({
+      ...plotline,
+      list: (...args: Parameters<typeof plotline.list>) =>
+        plotline.list(...args).pipe(
+          Effect.map((result) => ({
+            ...result,
+            dags: result.dags.map((item) =>
+              item.id !== dag.id
+                ? item
+                : {
+                    ...item,
+                    tasks: item.tasks.map((task) => ({
+                      ...task,
+                      correctionAttempts: [
+                        {
+                          ...task.correctionAttempts![0]!,
+                          id: "blocked-correction",
+                          state: "requested" as const,
+                          verifierRequest: undefined,
+                        },
+                        ...task.correctionAttempts!,
+                      ],
+                    })),
+                  },
+            ),
+          })),
+        ),
+      updateVerifierRequest: (...args: Parameters<typeof plotline.updateVerifierRequest>) =>
+        plotline
+          .updateVerifierRequest(...args)
+          .pipe(
+            Effect.tap(() =>
+              args[1].state === "dispatched"
+                ? Deferred.succeed(dispatchedPersisted, undefined)
+                : args[1].diagnostic?.includes("receipt lookup failed")
+                  ? Deferred.succeed(retryPersisted, undefined)
+                  : Effect.void,
+            ),
+          ),
+    });
+    let lookups = 0;
+    const sink = EventSink.EventSinkV2.of({
+      readByCommandId: () =>
+        ++lookups === 1 ? Stream.fail(new Error("unavailable")) : Stream.empty,
+      stream: () => Stream.empty,
+      readPersisted: () => Stream.empty,
+    } as unknown as EventSink.EventSinkV2["Service"]);
+    const orchestrator = Orchestrator.OrchestratorV2.of({
+      streamStoredEventsFrom: () => Stream.empty,
+      dispatch: () =>
+        Deferred.succeed(correctionStarted, undefined).pipe(Effect.andThen(Effect.never)),
+    } as unknown as Orchestrator.OrchestratorV2["Service"]);
+    const threads = ThreadManagementService.ThreadManagementService.of({
+      dispatch: () => Effect.succeed(verifierDispatchResult),
+    } as unknown as ThreadManagementService.ThreadManagementService["Service"]);
+    yield* Events.makeStore.pipe(
+      Effect.provideService(PlotlineDagService.PlotlineDagService, observingPlotline),
+      Effect.provideService(EventSink.EventSinkV2, sink),
+      Effect.provideService(Orchestrator.OrchestratorV2, orchestrator),
+      Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
+    );
+    yield* Deferred.await(correctionStarted);
+    yield* Deferred.await(retryPersisted);
+    yield* TestClock.adjust("1 second");
+    yield* Deferred.await(dispatchedPersisted);
+    const request = (yield* plotline.getForProject("project:isolated-recovery", dag.id)).tasks[0]!
+      .correctionAttempts![0]!.verifierRequest;
+    assert.strictEqual(request?.state, "dispatched");
+    assert.strictEqual(request?.retryCount, 1);
+  }).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        defaultRecoveryDependencies,
+        PlotlineDagService.layer.pipe(
+          Layer.provideMerge(Layer.mergeAll(SqlitePersistence.layerMemory, NodeCrypto.layer)),
+        ),
+        Layer.succeed(
+          ProviderInstanceRegistry.ProviderInstanceRegistry,
+          ProviderInstanceRegistry.ProviderInstanceRegistry.of({
+            getInstance: () => Effect.void,
+          } as unknown as ProviderInstanceRegistry.ProviderInstanceRegistry["Service"]),
+        ),
+      ),
+    ),
+    Effect.scoped,
+  ),
+);
+
+it.effect("persists and retries a failed verifier child linkage with the same command", () =>
+  Effect.gen(function* () {
+    const retried = yield* Deferred.make<void>();
+    const linked = yield* Deferred.make<void>();
+    const plotline = yield* PlotlineDagService.PlotlineDagService;
+    const { dag, correctionId } = yield* prepareRequestedVerifier(plotline, "project:link-retry");
+    let first = true;
+    const observing = PlotlineDagService.PlotlineDagService.of({
+      ...plotline,
+      updateVerifierRequest: (...args: Parameters<typeof plotline.updateVerifierRequest>) => {
+        if (args[1].state === "dispatched" && first) {
+          first = false;
+          return Effect.fail(new PlotlineDagError({ message: "link unavailable" }));
+        }
+        return plotline
+          .updateVerifierRequest(...args)
+          .pipe(
+            Effect.tap(() =>
+              args[1].state === "dispatched"
+                ? Deferred.succeed(linked, undefined)
+                : args[1].diagnostic?.includes("child linkage failed")
+                  ? Deferred.succeed(retried, undefined)
+                  : Effect.void,
+            ),
+          );
+      },
+    });
+    const commandIds: string[] = [];
+    const threads = ThreadManagementService.ThreadManagementService.of({
+      dispatch: (command: { readonly commandId: string }) =>
+        Effect.sync(() => {
+          commandIds.push(command.commandId);
+          return verifierDispatchResult;
+        }),
+    } as unknown as ThreadManagementService.ThreadManagementService["Service"]);
+    yield* Events.makeStore.pipe(
+      Effect.provideService(PlotlineDagService.PlotlineDagService, observing),
+      Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
+    );
+    yield* Deferred.await(retried);
+    const pending = (yield* plotline.getForProject("project:link-retry", dag.id)).tasks[0]!
+      .correctionAttempts![0]!.verifierRequest;
+    assert.strictEqual(pending?.state, "requested");
+    assert.include(pending?.diagnostic ?? "", "child linkage failed");
+    yield* TestClock.adjust("1 second");
+    yield* Deferred.await(linked);
+    assert.deepStrictEqual(commandIds, [pending?.commandId, pending?.commandId]);
+    yield* plotline.updateVerifierRequest("project:link-retry", {
+      dagId: dag.id,
+      taskId: "task",
+      correctionId,
+      state: "requested",
+      expectedState: "requested",
+      expectedCommandId: pending!.commandId,
+      expectedRetryCount: pending!.retryCount ?? 0,
+      diagnostic: "Late linkage timeout.",
+    });
+    const current = (yield* plotline.getForProject("project:link-retry", dag.id)).tasks[0]!
+      .correctionAttempts![0]!.verifierRequest;
+    assert.strictEqual(current?.state, "dispatched");
+  }).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        defaultRecoveryDependencies,
+        PlotlineDagService.layer.pipe(
+          Layer.provideMerge(Layer.mergeAll(SqlitePersistence.layerMemory, NodeCrypto.layer)),
+        ),
+        Layer.succeed(
+          Orchestrator.OrchestratorV2,
+          Orchestrator.OrchestratorV2.of({
+            streamStoredEventsFrom: () => Stream.empty,
+          } as unknown as Orchestrator.OrchestratorV2["Service"]),
+        ),
+        Layer.succeed(
+          ProviderInstanceRegistry.ProviderInstanceRegistry,
+          ProviderInstanceRegistry.ProviderInstanceRegistry.of({
+            getInstance: () => Effect.void,
+          } as unknown as ProviderInstanceRegistry.ProviderInstanceRegistry["Service"]),
+        ),
+      ),
+    ),
+    Effect.scoped,
+  ),
+);
+
 it.effect("retries a failed verifier receipt lookup before dispatching the same command", () => {
   let lookupCount = 0;
   const commandIds: string[] = [];
@@ -326,6 +560,7 @@ it.effect("retries a failed verifier receipt lookup before dispatching the same 
         return lookupCount === 1 ? Stream.fail(new Error("receipt unavailable")) : Stream.empty;
       },
       stream: () => Stream.empty,
+      readPersisted: () => Stream.empty,
     } as unknown as EventSink.EventSinkV2["Service"]);
     let dispatches = 0;
     const threads = ThreadManagementService.ThreadManagementService.of({
@@ -1045,14 +1280,17 @@ it.effect(
     const result = makeStoredVerifierResult("fail");
     const duplicate = { ...makeStoredVerifierResult("fail", 2), event: result.event };
     const dispatches: Array<{ readonly commandId: string; readonly type: string }> = [];
+    let dispatched: Deferred.Deferred<void>;
     const orchestrator = Orchestrator.OrchestratorV2.of({
       streamStoredEventsFrom: ({ afterSequence = 0 }: { readonly afterSequence?: number } = {}) =>
         Stream.fromIterable([result, duplicate].filter((event) => event.sequence > afterSequence)),
       dispatch: (command: { readonly commandId: string; readonly type: string }) =>
         Effect.sync(() => {
           dispatches.push(command);
-          return { storedEvents: [] };
-        }),
+        }).pipe(
+          Effect.andThen(Deferred.succeed(dispatched, undefined)),
+          Effect.as({ storedEvents: [] }),
+        ),
     } as unknown as Orchestrator.OrchestratorV2["Service"]);
     const providers = ProviderInstanceRegistry.ProviderInstanceRegistry.of({
       getInstance: () => Effect.void,
@@ -1064,6 +1302,7 @@ it.effect(
       Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, providers),
     );
     return Effect.gen(function* () {
+      dispatched = yield* Deferred.make<void>();
       const plotline = yield* PlotlineDagService.PlotlineDagService;
       const { dag, correctionId: verifierCorrectionId } = yield* prepareDispatchedVerifier(
         plotline,
@@ -1071,6 +1310,7 @@ it.effect(
       );
       yield* Events.makeStore;
       yield* TestClock.adjust("1 second");
+      yield* Deferred.await(dispatched);
       const first = yield* plotline.getForProject("project:auto-correction", dag.id);
       const task = first.tasks[0]!;
       assert.strictEqual(
