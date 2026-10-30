@@ -43,7 +43,17 @@ const VerifierEvidence = Schema.Struct({
     }),
   ),
 });
-const decodeVerifierEvidence = Schema.decodeUnknownEffect(Schema.fromJsonString(VerifierEvidence));
+const decodeVerifierEvidence = Schema.decodeUnknownEffect(VerifierEvidence, {
+  onExcessProperty: "error",
+});
+
+const extractVerifierJson = (text: string): string | null => {
+  const trimmed = text.trim();
+  if (!trimmed.includes("```")) return trimmed;
+  const fences = [...trimmed.matchAll(/```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```/gi)];
+  if (fences.length !== 1 || trimmed.replace(fences[0]![0], "").includes("```")) return null;
+  return fences[0]![1]!;
+};
 
 export type HarnessSignificantEventType =
   | "user_feedback"
@@ -1514,13 +1524,7 @@ export const makeStore = Effect.gen(function* () {
               );
               continue;
             }
-            const evidence =
-              payload.status === "completed" && payload.result !== null
-                ? yield* decodeVerifierEvidence(payload.result).pipe(
-                    Effect.orElseSucceed(() => null),
-                  )
-                : null;
-            if (evidence === null) {
+            if (payload.status !== "completed" || payload.result === null) {
               yield* retryVerifierRequest(
                 dag.id,
                 dag.projectId,
@@ -1534,21 +1538,89 @@ export const makeStore = Effect.gen(function* () {
               );
               continue;
             }
+            const json = extractVerifierJson(payload.result);
+            const parsed = yield* decodeJson(json).pipe(
+              Effect.match({
+                onFailure: (error) => ({ error: String(error) }),
+                onSuccess: (value) => ({ value }),
+              }),
+            );
+            if ("error" in parsed) {
+              yield* failVerifierRequest(
+                dag.id,
+                dag.projectId,
+                task.id,
+                correction.id,
+                request,
+                `Verifier JSON parsing failed: ${parsed.error}. Return one JSON object or one JSON code fence.`.slice(
+                  0,
+                  2048,
+                ),
+              );
+              continue;
+            }
+            const evidence = yield* decodeVerifierEvidence(parsed.value).pipe(
+              Effect.match({
+                onFailure: (error) => ({ error: String(error) }),
+                onSuccess: (value) => ({ value }),
+              }),
+            );
+            if ("error" in evidence) {
+              yield* failVerifierRequest(
+                dag.id,
+                dag.projectId,
+                task.id,
+                correction.id,
+                request,
+                `Verifier evidence schema validation failed: ${evidence.error}`.slice(0, 2048),
+              );
+              continue;
+            }
+            const result = evidence.value;
             const criteria = task.acceptanceCriteria ?? [];
+            const criterionIds = new Set(criteria.map((criterion) => criterion.id));
+            const resultIds = new Set(result.criterionResults.map((item) => item.criterionId));
             if (
-              evidence.verdict === "inconclusive" ||
-              evidence.criterionResults.length !== criteria.length ||
-              evidence.criterionResults.some((result) => !result.evidence.trim()) ||
-              (evidence.verdict === "fail" &&
-                !evidence.criterionResults.some((result) => result.verdict === "fail"))
+              (result.verdict === "pass" && criteria.length === 0) ||
+              result.criterionResults.length !== criteria.length ||
+              resultIds.size !== criteria.length ||
+              result.criterionResults.some((item) => !criterionIds.has(item.criterionId))
             ) {
+              yield* failVerifierRequest(
+                dag.id,
+                dag.projectId,
+                task.id,
+                correction.id,
+                request,
+                "Verifier criterion ID validation failed: return exactly one result for each original acceptance criterion ID.",
+              );
+              continue;
+            }
+            if (
+              result.criterionResults.some((item) => !item.evidence.trim()) ||
+              (result.verdict === "pass" &&
+                result.criterionResults.some((item) => item.verdict !== "pass")) ||
+              (result.verdict === "fail" &&
+                !result.criterionResults.some((item) => item.verdict === "fail"))
+            ) {
+              yield* failVerifierRequest(
+                dag.id,
+                dag.projectId,
+                task.id,
+                correction.id,
+                request,
+                "Verifier evidence validation failed: provide nonempty evidence for every criterion and a verdict consistent with its results.",
+              );
+              continue;
+            }
+            if (result.verdict === "inconclusive") {
               yield* retryVerifierRequest(
                 dag.id,
                 dag.projectId,
                 task.id,
                 correction.id,
                 request,
-                "Verifier supplied inconclusive or unsupported failure evidence.",
+                "Verifier supplied inconclusive evidence.",
               );
               continue;
             }
@@ -1558,23 +1630,42 @@ export const makeStore = Effect.gen(function* () {
               attemptId: `plotline-verification-${correction.id}`,
               expectedCriteriaVersion: request.criteriaVersion,
               expectedRunId: request.expectedRunId,
-              ...evidence,
-            }).pipe(Effect.orElseSucceed(() => null));
-            if (attemptInput === null) {
-              yield* retryVerifierRequest(
+              ...result,
+            }).pipe(
+              Effect.match({
+                onFailure: (error) => ({ error: String(error) }),
+                onSuccess: (value) => ({ value }),
+              }),
+            );
+            if ("error" in attemptInput) {
+              yield* failVerifierRequest(
                 dag.id,
                 dag.projectId,
                 task.id,
                 correction.id,
                 request,
-                "Verifier returned invalid verification output",
+                `Verifier attempt validation failed: ${attemptInput.error}`.slice(0, 2048),
               );
               continue;
             }
             const recorded = yield* plotline
-              .recordVerificationAttempt(dag.projectId, attemptInput)
-              .pipe(Effect.match({ onFailure: (cause) => String(cause), onSuccess: () => null }));
+              .recordVerificationAttempt(dag.projectId, attemptInput.value)
+              .pipe(Effect.match({ onFailure: (cause) => cause, onSuccess: () => null }));
             if (recorded !== null) {
+              if (
+                recorded.message.startsWith("Verification submission is stale for the current ") ||
+                recorded.message.startsWith("Verification attempt is stale for the current ")
+              ) {
+                yield* failVerifierRequest(
+                  dag.id,
+                  dag.projectId,
+                  task.id,
+                  correction.id,
+                  request,
+                  `Verifier result is stale: ${recorded.message}`.slice(0, 2048),
+                );
+                continue;
+              }
               const diagnostic = `Verifier evidence persistence failed: ${recorded}`.slice(0, 2048);
               if ((request.persistenceFailures ?? 0) >= 2) {
                 yield* failVerifierRequest(
@@ -1604,7 +1695,7 @@ export const makeStore = Effect.gen(function* () {
               }
               continue;
             }
-            if (evidence.verdict === "fail") {
+            if (result.verdict === "fail") {
               const dispatchInput = {
                 type: "delegated_task.request" as const,
                 createdBy: "agent" as const,
@@ -1616,8 +1707,8 @@ export const makeStore = Effect.gen(function* () {
                 task: correctionPrompt({
                   task,
                   workspace: dag.workspace,
-                  summary: evidence.summary,
-                  criterionResults: evidence.criterionResults,
+                  summary: result.summary,
+                  criterionResults: result.criterionResults,
                 }),
                 modelSelection: request.modelSelection,
                 runtimeMode: request.runtimeMode,
@@ -1628,7 +1719,7 @@ export const makeStore = Effect.gen(function* () {
                 .beginCorrection(dag.projectId, {
                   dagId: dag.id,
                   taskId: task.id,
-                  verificationAttemptId: attemptInput.attemptId,
+                  verificationAttemptId: attemptInput.value.attemptId,
                   expectedCriteriaVersion: request.criteriaVersion,
                   expectedRunId: request.expectedRunId,
                   dispatchInput,
@@ -1651,7 +1742,7 @@ export const makeStore = Effect.gen(function* () {
             yield* plotline.updateTask(dag.projectId, {
               dagId: dag.id,
               taskId: task.id,
-              state: evidence.verdict === "pass" ? "done" : "failed",
+              state: result.verdict === "pass" ? "done" : "failed",
             });
             yield* plotline.updateVerifierRequest(dag.projectId, {
               dagId: dag.id,

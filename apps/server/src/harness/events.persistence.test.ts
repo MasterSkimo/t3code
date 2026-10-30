@@ -241,6 +241,7 @@ const makeStoredVerifierResult = (
   verdict: "pass" | "fail" | "inconclusive",
   sequence = 1,
   eventId = "subagent-event-verifier",
+  resultText?: string,
 ) => {
   const stored = makeStoredSubagent("completed");
   return {
@@ -254,17 +255,19 @@ const makeStoredVerifierResult = (
         id: "verifier-child",
         childThreadId: "thread_verifier_child",
         runId: "run:verifier",
-        result: JSON.stringify({
-          verdict,
-          summary: "Automatic verification result.",
-          criterionResults: [
-            {
-              criterionId: "works",
-              verdict,
-              evidence: "The acceptance check did not pass.",
-            },
-          ],
-        }),
+        result:
+          resultText ??
+          JSON.stringify({
+            verdict,
+            summary: "Automatic verification result.",
+            criterionResults: [
+              {
+                criterionId: "works",
+                verdict,
+                evidence: "The acceptance check did not pass.",
+              },
+            ],
+          }),
       },
     },
   };
@@ -1086,7 +1089,18 @@ it.effect("atomically escalates only the run associated with the failed verifier
 });
 
 it.effect("replays a passing verifier result across restart without duplicating settlement", () => {
-  const result = makeStoredVerifierResult("pass");
+  const result = makeStoredVerifierResult(
+    "pass",
+    1,
+    "subagent-event-verifier",
+    [
+      "Verification completed.",
+      "",
+      "```json",
+      '{"verdict":"pass","summary":"The acceptance check passed.","criterionResults":[{"criterionId":"works","verdict":"pass","evidence":"Ran the acceptance check; it passed."}]}',
+      "```",
+    ].join("\n"),
+  );
   const duplicate = { ...makeStoredVerifierResult("pass", 2), event: result.event };
   const orchestrator = Orchestrator.OrchestratorV2.of({
     streamStoredEventsFrom: ({ afterSequence = 0 }: { readonly afterSequence?: number } = {}) =>
@@ -1113,6 +1127,8 @@ it.effect("replays a passing verifier result across restart without duplicating 
       .tasks[0]!;
     assert.strictEqual(settled.state, "done");
     assert.strictEqual(settled.verificationAttempts?.length, 2);
+    assert.strictEqual(settled.verificationAttempts?.[1]?.criteriaVersion, settled.criteriaVersion);
+    assert.strictEqual(settled.verificationAttempts?.[1]?.runId, "run:correction-child");
     assert.strictEqual(settled.correctionAttempts?.[0]?.verifierRequest?.state, "completed");
 
     yield* Events.makeStore;
@@ -1124,6 +1140,50 @@ it.effect("replays a passing verifier result across restart without duplicating 
     assert.strictEqual(replayed.correctionAttempts?.[0]?.id, correctionId);
   }).pipe(Effect.provide(Layer.mergeAll(defaultRecoveryDependencies, layer)), Effect.scoped);
 });
+
+for (const [name, output, diagnostic] of [
+  ["malformed JSON", "```json\n{invalid}\n```", "Verifier JSON parsing failed:"],
+  [
+    "the incident result using results instead of criterionResults",
+    '{"verdict":"pass","summary":"4/4 tests passed","results":[{"criterionId":"works","verdict":"pass","evidence":"Ran the check."}]}',
+    "Verifier evidence schema validation failed:",
+  ],
+  [
+    "an unknown criterion ID",
+    '{"verdict":"pass","summary":"Passed","criterionResults":[{"criterionId":"wrong","verdict":"pass","evidence":"Ran the check."}]}',
+    "Verifier criterion ID validation failed:",
+  ],
+] as const) {
+  it.effect(`rejects ${name} without recording a verification or retrying`, () => {
+    const result = makeStoredVerifierResult("pass", 1, "subagent-event-verifier", output);
+    const orchestrator = Orchestrator.OrchestratorV2.of({
+      streamStoredEventsFrom: ({ afterSequence = 0 }: { readonly afterSequence?: number } = {}) =>
+        Stream.fromIterable([result].filter((event) => event.sequence > afterSequence)),
+    } as unknown as Orchestrator.OrchestratorV2["Service"]);
+    const providers = ProviderInstanceRegistry.ProviderInstanceRegistry.of({
+      getInstance: () => Effect.void,
+    } as unknown as ProviderInstanceRegistry.ProviderInstanceRegistry["Service"]);
+    const persistence = Layer.mergeAll(SqlitePersistence.layerMemory, NodeCrypto.layer);
+    const layer = Layer.mergeAll(
+      PlotlineDagService.layer.pipe(Layer.provideMerge(persistence)),
+      Layer.succeed(Orchestrator.OrchestratorV2, orchestrator),
+      Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, providers),
+    );
+    return Effect.gen(function* () {
+      const plotline = yield* PlotlineDagService.PlotlineDagService;
+      const { dag } = yield* prepareDispatchedVerifier(plotline, "project:invalid-verifier");
+      yield* Events.makeStore;
+      yield* TestClock.adjust("1 second");
+      const task = (yield* plotline.getForProject("project:invalid-verifier", dag.id)).tasks[0]!;
+      const request = task.correctionAttempts?.[0]?.verifierRequest;
+      assert.strictEqual(task.verificationAttempts?.length, 1);
+      assert.strictEqual(request?.state, "failed");
+      assert.strictEqual(request?.retryCount ?? 0, 0);
+      assert.strictEqual(request?.persistenceFailures ?? 0, 0);
+      assert.include(request?.diagnostic ?? "", diagnostic);
+    }).pipe(Effect.provide(Layer.mergeAll(defaultRecoveryDependencies, layer)), Effect.scoped);
+  });
+}
 
 it.effect("replays the same verifier evidence after a durable persistence failure", () => {
   const result = makeStoredVerifierResult("pass");
