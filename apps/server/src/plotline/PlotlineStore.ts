@@ -11,7 +11,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import * as PlotlineDatabase from "./PlotlineDatabase.ts";
+import * as ForkDatabase from "../fork/ForkDatabase.ts";
 
 const decodeSnapshot = Schema.decodeUnknownSync(Schema.fromJsonString(PlotlineDagSnapshot));
 const encodeSnapshot = Schema.encodeSync(Schema.fromJsonString(PlotlineDagSnapshot));
@@ -37,7 +37,7 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       if (!threadId.trim()) return yield* failure("Thread id is required.");
       const rows = yield* sql<{ readonly payload_json: string }>`
-        SELECT payload_json FROM plotline_dag_snapshots
+        SELECT payload_json FROM fork_plotline_dag_snapshots
         WHERE thread_id = ${threadId} ORDER BY updated_at DESC LIMIT 100
       `.pipe(Effect.mapError(() => failure("Could not read Plotline snapshots.")));
       return {
@@ -71,7 +71,7 @@ const make = Effect.gen(function* () {
       if (new TextEncoder().encode(payload).byteLength > MAX_PAYLOAD_BYTES)
         return yield* failure("Plotline graph exceeds the storage limit.");
       yield* sql`
-        INSERT INTO plotline_dag_snapshots
+        INSERT INTO fork_plotline_dag_snapshots
           (thread_id, run_id, payload_json, created_at, updated_at)
         VALUES (${input.threadId}, ${input.runId}, ${payload}, ${now}, ${now})
         ON CONFLICT(thread_id, run_id) DO UPDATE SET
@@ -86,8 +86,8 @@ const make = Effect.gen(function* () {
 
 /** Service only exports PlotlineStore. The isolated SQLite client stays private. */
 export const layerMemory = Layer.effect(PlotlineStore, make).pipe(
-  Layer.provide(PlotlineDatabase.layerMemory),
+  Layer.provide(ForkDatabase.layerMemory),
 );
 export const layer = Layer.effect(PlotlineStore, make).pipe(
-  Layer.provide(PlotlineDatabase.layer),
+  Layer.provide(ForkDatabase.layer),
 );
