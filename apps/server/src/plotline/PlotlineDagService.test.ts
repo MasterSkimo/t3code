@@ -225,14 +225,6 @@ describe("PlotlineDagService", () => {
         runId: "run:exact",
         acceptanceCriteria: [{ id: "verified", description: "Explicit verification" }],
       });
-      const [stored] = yield* sql<{ readonly payload_json: string; readonly updated_at: string }>`
-        SELECT payload_json, updated_at FROM plotline_dags WHERE dag_id = ${dag.id}
-      `;
-      const staleFinishedAt = JSON.parse(stored!.payload_json) as {
-        tasks: Array<Record<string, unknown>>;
-      };
-      staleFinishedAt.tasks[0]!.finishedAt = "2026-10-01T00:00:00.000Z";
-      yield* sql`UPDATE plotline_dags SET payload_json = ${JSON.stringify(staleFinishedAt)} WHERE dag_id = ${dag.id}`;
       yield* service.reconcileRun("thread:wrong", "run:exact", "failed");
       yield* service.reconcileRun("thread:exact", "run:stale", "failed");
       assert.strictEqual(

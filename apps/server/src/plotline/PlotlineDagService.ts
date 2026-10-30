@@ -1394,7 +1394,8 @@ const make = Effect.gen(function* () {
               if (
                 nextState === current.state &&
                 current.finishedAt === null &&
-                !hasRunningCorrection
+                (status === "running" ||
+                  (current.executionLifecycle === executionLifecycle && !hasRunningCorrection))
               )
                 continue;
               const now = nextUpdatedAt(

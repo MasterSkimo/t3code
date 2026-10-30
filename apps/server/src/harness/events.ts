@@ -1016,27 +1016,59 @@ export const makeStore = Effect.gen(function* () {
               interactionMode: decoded.interactionMode,
               completionWake: "always" as const,
             };
-            const dispatched = yield* threads.value
-              .dispatch(command)
-              .pipe(Effect.match({ onFailure: () => null, onSuccess: (result) => result }));
-            if (dispatched === null) {
-              // Inactive parents and unavailable providers are explicit escalations, not retries.
-              yield* failVerifierRequest(
-                dag.id,
-                dag.projectId,
-                task.id,
-                correction.id,
-                decoded.criteriaVersion,
-                decoded.expectedRunId,
-              );
+            const dispatched = yield* threads.value.dispatch(command).pipe(
+              Effect.match({
+                onFailure: (cause) => ({ ok: false as const, cause }),
+                onSuccess: (result) => ({ ok: true as const, result }),
+              }),
+            );
+            if (!dispatched.ok) {
+              const cause = dispatched.cause;
+              const permanent =
+                typeof cause === "object" &&
+                cause !== null &&
+                "_tag" in cause &&
+                (cause._tag === "OrchestratorCommandPreviouslyRejectedError" ||
+                  cause._tag === "OrchestratorCommandIdConflictError" ||
+                  cause._tag === "OrchestratorCommandRejectedError" ||
+                  cause._tag === "ThreadManagementProviderInstanceDisabledError");
+              if (permanent) {
+                yield* failVerifierRequest(
+                  dag.id,
+                  dag.projectId,
+                  task.id,
+                  correction.id,
+                  decoded.criteriaVersion,
+                  decoded.expectedRunId,
+                );
+                yield* Effect.logWarning(
+                  "Verifier dispatch was permanently rejected and escalated.",
+                  {
+                    dagId: dag.id,
+                    taskId: task.id,
+                    correctionId: correction.id,
+                    cause,
+                  },
+                );
+              } else {
+                yield* Effect.logWarning("Verifier dispatch recovery was deferred.", {
+                  dagId: dag.id,
+                  taskId: task.id,
+                  correctionId: correction.id,
+                  commandId: decoded.commandId,
+                  cause,
+                });
+              }
               continue;
             }
+            const dispatchedResult = dispatched.result;
             const receipt = Option.isSome(eventSink)
               ? yield* Stream.runCollect(
                   eventSink.value.readByCommandId({ commandId: CommandId.make(decoded.commandId) }),
-                ).pipe(Effect.orElseSucceed(() => dispatched.storedEvents))
-              : dispatched.storedEvents;
-            const storedEvents = receipt.length === 0 ? dispatched.storedEvents : [...receipt];
+                ).pipe(Effect.orElseSucceed(() => dispatchedResult.storedEvents))
+              : dispatchedResult.storedEvents;
+            const storedEvents =
+              receipt.length === 0 ? dispatchedResult.storedEvents : [...receipt];
             const child = storedEvents.find(
               (stored) =>
                 stored.event.type === "subagent.updated" &&
@@ -1046,13 +1078,14 @@ export const makeStore = Effect.gen(function* () {
               child?.event.type !== "subagent.updated" ||
               child.event.payload.childThreadId === null
             ) {
-              yield* failVerifierRequest(
-                dag.id,
-                dag.projectId,
-                task.id,
-                correction.id,
-                decoded.criteriaVersion,
-                decoded.expectedRunId,
+              yield* Effect.logWarning(
+                "Verifier dispatch receipt is incomplete; recovery deferred.",
+                {
+                  dagId: dag.id,
+                  taskId: task.id,
+                  correctionId: correction.id,
+                  commandId: decoded.commandId,
+                },
               );
               continue;
             }
@@ -1062,7 +1095,18 @@ export const makeStore = Effect.gen(function* () {
                 stored.event.type === "run.created" &&
                 stored.event.threadId === verifierChildThreadId,
             );
-            if (childRun?.event.type !== "run.created") continue;
+            if (childRun?.event.type !== "run.created") {
+              yield* Effect.logWarning(
+                "Verifier dispatch receipt has no run projection; recovery deferred.",
+                {
+                  dagId: dag.id,
+                  taskId: task.id,
+                  correctionId: correction.id,
+                  commandId: decoded.commandId,
+                },
+              );
+              continue;
+            }
             yield* plotline.updateVerifierRequest(dag.projectId, {
               dagId: dag.id,
               taskId: task.id,
