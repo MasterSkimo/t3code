@@ -4,6 +4,7 @@ import * as Crypto from "effect/Crypto";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
 import * as PeerLinkRequests from "./peer/PeerLinkRequests.ts";
 import * as PeerLinks from "./peer/PeerLinks.ts";
+import * as PlotlineStore from "./plotline/PlotlineStore.ts";
 
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -80,6 +81,7 @@ import {
   type ServerConfig as ClientServerConfig,
   type ServerConfigStreamEvent,
   type ServerLifecycleStreamEvent,
+  PlotlineStorageError,
   type ServerProvider,
   type FilesystemBrowseFailure,
   FilesystemBrowseError,
@@ -1232,6 +1234,9 @@ export const layerWsRpc = (
       const currentSessionId = currentSession.sessionId;
       const sql = yield* SqlClient.SqlClient;
       const threadManagement = yield* ThreadManagementService.ThreadManagementService;
+      // Optional to preserve upstream server tests that do not install fork services.
+      const plotlineStore = yield* Effect.serviceOption(PlotlineStore.PlotlineStore);
+      const unavailablePlotline = new PlotlineStorageError({ message: "Plotline extension storage is unavailable." });
       const intakeContext = yield* Effect.context<
         | ThreadManagementService.ThreadManagementService
         | ThreadLaunchService.ThreadLaunchService
@@ -1867,6 +1872,16 @@ export const layerWsRpc = (
       });
 
       const handlers = ServerWsRpcGroup.of({
+        [WS_METHODS.plotlineList]: (input) =>
+          Option.match(plotlineStore, {
+            onNone: () => Effect.fail(unavailablePlotline),
+            onSome: (store) => store.list(input),
+          }),
+        [WS_METHODS.plotlineSave]: (input) =>
+          Option.match(plotlineStore, {
+            onNone: () => Effect.fail(unavailablePlotline),
+            onSome: (store) => store.save(input),
+          }),
         [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command) =>
           Effect.annotateCurrentSpan({
             "orchestration_v2.command_id": command.commandId,
