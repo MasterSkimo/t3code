@@ -75,8 +75,8 @@ describe("Plotline read-only projection", () => {
       { from: "a", to: "c" },
     ]);
     const positions = new Map(result.positions.map((entry) => [entry.node.id, entry]));
-    expect(positions.get("a")?.y).toBe(positions.get("b")?.y);
-    expect((positions.get("c")?.y ?? 0) > (positions.get("a")?.y ?? 0)).toBe(true);
+    expect(positions.get("a")?.x).toBe(positions.get("b")?.x);
+    expect((positions.get("c")?.x ?? 0) > (positions.get("a")?.x ?? 0)).toBe(true);
   });
 });
 
@@ -94,9 +94,10 @@ describe("dynamic Plotline DAG view", () => {
     expect(view.nodes.map((node) => node.status)).toEqual(["planned", "planned", "planned", "planned"]);
     expect(view.dependencies).toEqual([{ from: "plan:A", to: "plan:D" }, { from: "plan:B", to: "plan:D" }]);
     const layout = layoutExecutionGraph(view.nodes, view.dependencies);
-    const byId = new Map(layout.positions.map((item) => [item.node.id, item.y]));
-    expect((byId.get("plan:D") ?? 0) > (byId.get("plan:A") ?? 0)).toBe(true);
-    expect(byId.get("plan:A")).toBe(byId.get("plan:B"));
+    const byId = new Map(layout.positions.map((item) => [item.node.id, item]));
+    expect((byId.get("plan:D")?.x ?? 0) > (byId.get("plan:A")?.x ?? 0)).toBe(true);
+    expect(byId.get("plan:A")?.x).toBe(byId.get("plan:B")?.x);
+    expect(byId.get("plan:A")?.y).not.toBe(byId.get("plan:B")?.y);
   });
 
   it("keeps previous native attempts inside the same planned task after retry", () => {
@@ -187,7 +188,8 @@ describe("dynamic Plotline DAG view", () => {
     expect(graph.edges).not.toContainEqual({ from: "plan:A1", to: "plan:B" });
     expect(graph.edges).not.toContainEqual({ from: "plan-root:root", to: "plan:B" });
     const positions = new Map(graph.positions.map((position) => [position.node.id, position]));
-    expect((positions.get("plan:B")?.y ?? 0)).toBeGreaterThan(positions.get("plan:A1")?.y ?? 0);
+    expect((positions.get("plan:B")?.x ?? 0)).toBeGreaterThan(positions.get("plan:A1")?.x ?? 0);
+    expect(positions.get("plan:A")?.y).toBe(positions.get("plan:A1")?.y);
   });
 
   it("keeps real dependencies before display-only subtask spacing", () => {
@@ -202,7 +204,7 @@ describe("dynamic Plotline DAG view", () => {
     };
     const view = projectDynamicPlan(plan, null);
     const graph = layoutExecutionGraph(view.nodes, view.dependencies);
-    const positions = new Map(graph.positions.map((position) => [position.node.id, position.y]));
+    const positions = new Map(graph.positions.map((position) => [position.node.id, position.x]));
     expect((positions.get("plan:B") ?? 0)).toBeLessThan(positions.get("plan:A1") ?? 0);
     expect(view.dependencies).toEqual([
       { from: "plan:B", to: "plan:A1" },
