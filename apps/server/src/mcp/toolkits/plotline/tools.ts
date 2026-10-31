@@ -31,14 +31,14 @@ const Add = Tool.make("plotline_task_add", {
   .annotate(Tool.Destructive, false).annotate(Tool.Idempotent, true);
 
 const Update = Tool.make("plotline_task_update", {
-  description: "Revise a plan task, its prerequisites or mark it skipped/cancelled with a reason. Changes only advisory plan metadata, not native T3 execution or task status. Reuse requestId on retry.",
+  description: "Update a plan task's title, prerequisites or planState. For unbound tasks created/discovered by workers, set planState=completed when finished (reason optional). To skip/cancel use planState=skipped/cancelled with a reason. Never mark a bound task completed: its status comes from native T3 delegation. The root orchestrator may settle unbound descendants after confirming their outcome. Then continue eligible dependent tasks using delegate_task; Plotline does not schedule work. Reuse requestId on retry.",
   parameters: PlotlineTaskUpdate, success: PlotlinePlanMutationResult, failure,
   failureMode: "return", dependencies,
 }).annotate(Tool.Title, "Update Plotline task plan")
   .annotate(Tool.Destructive, false).annotate(Tool.Idempotent, true);
 
 const Bind = Tool.make("plotline_task_bind", {
-  description: "Immediately bind each planned task to the native delegated-task ID returned by delegate_task, before waiting for the worker result. Workers may add subtasks only after their own assignment is bound. A worker may bind only subtasks it created. Finished native delegations may be retried on the SAME task; earlier attempts are retained. Binding never drives execution.",
+  description: "Bind a PLANNED task to the native delegated-task ID returned by delegate_task, before waiting for the worker. Native T3 controls bound-task completion. Workers may bind only subtasks they created. A native retry reuses the SAME plan task, retaining earlier attempts. A manually completed/skipped/cancelled task must first be reset to planned. Binding never drives execution.",
   parameters: PlotlineTaskBind, success: PlotlinePlanMutationResult, failure,
   failureMode: "return", dependencies,
 }).annotate(Tool.Title, "Bind native T3 delegation to plan")
