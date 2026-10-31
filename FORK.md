@@ -26,3 +26,29 @@ No upstream migration file is modified. The entire extension can be deleted with
 ## Current limitations
 
 Snapshots are recorded while their conversation projection is loaded in the UI. No background server-wide snapshotter is installed. The graph shows native runs/delegations, not a model-inferred task plan. No legacy Plotline DAG migration or Harness logic is included.
+
+## Dynamic task plans (fork migration 002)
+
+Terra initializes one task plan per root conversation. Workers discover nested tasks; the
+plan evolves independently of T3's run execution and native delegation metadata.
+
+- `fork_plotline_plans`: revisioned JSON plan keyed by `root_thread_id`.
+- `fork_plotline_plan_events`: append-only mutation receipts per `request_id`; concurrent
+  updates are wrapped in a single SQLite transaction and are idempotent.
+- `plotline_plan_create`: initial tasks and dependency IDs (root orchestrator only).
+- `plotline_task_add`: append a new task (workers only under an assigned/owned task).
+- `plotline_task_update`: revise details/prerequisites or mark skipped/cancelled with a reason.
+- `plotline_task_bind`: root orchestrator binds the actual T3 delegated `taskId` to its plan node.
+  The server verifies the native task exists and derives the child thread ID itself.
+- Browser view uses the existing authenticated `plotline.plan.get` RPC and refreshes while open.
+
+**The tools only update plan metadata.** They cannot start, stop, retry, verify or settle native
+T3 work. Execution state and model information come from native T3 subagent records, including
+older runs in the same conversation. Unbound native delegations remain visible.
+
+Solid connectors show hierarchy. Dashed connectors show functional prerequisites. Invalid
+dependencies, duplicate IDs, cycles and unrelated worker edits are rejected. The plan remains
+visible before any delegation, including tasks marked skipped or cancelled.
+
+Provider instructions mention the tools **only when the user requested Plotline/DAG tracking**.
+The existing unplanned conversation observer remains the fallback when no plan is initialized.
