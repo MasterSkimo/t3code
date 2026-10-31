@@ -49,99 +49,61 @@ export function routePlotlineEdges(
   hierarchy: readonly { readonly from: string; readonly to: string }[],
   dependencies: readonly { readonly from: string; readonly to: string }[],
 ): readonly PlotlineRoute[] {
-  const byId = new Map(positions.map((item) => [item.node.id, item]));
-  const routes: PlotlineRoute[] = [];
-  const bottom = (item: ObservedPosition): PlotlinePoint => ({
-    x: item.x + OBSERVER_NODE_WIDTH / 2, y: item.y + OBSERVER_NODE_HEIGHT,
-  });
-  const top = (item: ObservedPosition): PlotlinePoint => ({
-    x: item.x + OBSERVER_NODE_WIDTH / 2, y: item.y,
-  });
-
-  for (const edge of hierarchy) {
-    const from = byId.get(edge.from);
-    const to = byId.get(edge.to);
-    if (!from || !to) continue;
-    const start = bottom(from);
-    const finish = top(to);
-    const midpoint = start.y + (finish.y - start.y) / 2;
-    const direct = [
-      start,
-      { x: start.x, y: midpoint },
-      { x: finish.x, y: midpoint },
-      finish,
-    ];
-    if (finish.y > start.y + 16 &&
-        !routeCrossesCards(direct, positions, edge.from, edge.to)) {
-      routes.push({ ...edge, kind: "hierarchy", points: direct });
-      continue;
-    }
-
-    // A distant child belongs in the parent's branch but may have unrelated
-    // work between it and the parent. Use the gutter instead of a vertical
-    // connector that would pass through those cards.
-    const right = to.x >= from.x;
-    const laneOffset = 20;
-    const departure = {
-      x: from.x + (right ? OBSERVER_NODE_WIDTH : 0),
-      y: from.y + OBSERVER_NODE_HEIGHT / 2,
-    };
-    const destination = {
-      x: to.x + (right ? 0 : OBSERVER_NODE_WIDTH),
-      y: to.y + OBSERVER_NODE_HEIGHT / 2,
-    };
-    const sourceLane = departure.x + (right ? laneOffset : -laneOffset);
-    const targetLane = destination.x + (right ? -laneOffset : laneOffset);
-    const transferY = from.y + OBSERVER_NODE_HEIGHT +
-      Math.min(28, Math.max(10, (to.y - from.y - OBSERVER_NODE_HEIGHT) / 2));
-    const points = [
-      departure,
-      { x: sourceLane, y: departure.y },
-      { x: sourceLane, y: transferY },
-      { x: targetLane, y: transferY },
-      { x: targetLane, y: destination.y },
-      destination,
-    ];
-    routes.push({ ...edge, kind: "hierarchy", points });
-  }
-
-  dependencies.forEach((edge, index) => {
-    const from = byId.get(edge.from);
-    const to = byId.get(edge.to);
-    if (!from || !to) return;
-    // Always exit and enter on the closest free side of each card. The same
-    // column uses its right gutter. Never connect to an intermediate subtask.
-    const sameColumn = Math.abs(from.x - to.x) < 1;
-    const goingRight = to.x > from.x || sameColumn;
+  const byId = new Map(positions.map((position) => [position.node.id, position]));
+  const result: PlotlineRoute[] = [];
+  const all = [
+    ...hierarchy.map((edge) => ({ ...edge, kind: "hierarchy" as const })),
+    ...dependencies.map((edge) => ({ ...edge, kind: "dependency" as const })),
+  ];
+  for (const [index, edge] of all.entries()) {
+    const source = byId.get(edge.from);
+    const target = byId.get(edge.to);
+    if (!source || !target) continue;
+    const forward = target.x > source.x + 2;
     const start = {
-      x: from.x + (goingRight ? OBSERVER_NODE_WIDTH : 0),
-      y: from.y + OBSERVER_NODE_HEIGHT / 2,
+      x: source.x + OBSERVER_NODE_WIDTH,
+      y: source.y + OBSERVER_NODE_HEIGHT / 2,
     };
     const finish = {
-      x: to.x + (sameColumn ? OBSERVER_NODE_WIDTH : goingRight ? 0 : OBSERVER_NODE_WIDTH),
-      y: to.y + OBSERVER_NODE_HEIGHT / 2,
+      x: target.x + (forward ? 0 : OBSERVER_NODE_WIDTH),
+      y: target.y + OBSERVER_NODE_HEIGHT / 2,
     };
-    const lane = 22 + (index % 3) * 6;
-    const sourceLane = start.x + (goingRight ? lane : -lane);
-    const targetLane = finish.x + (sameColumn || !goingRight ? lane : -lane);
-    // Cross columns in the first clear row gap below the source, never at card
-    // mid-height. Then descend inside a column gutter to the destination.
-    const transferY = from.y + OBSERVER_NODE_HEIGHT +
-      Math.min(30, Math.max(12, (to.y - from.y - OBSERVER_NODE_HEIGHT) / 2));
-    routes.push({
-      ...edge,
-      kind: "dependency",
-      points: [
-        start,
-        { x: sourceLane, y: start.y },
-        { x: sourceLane, y: transferY },
-        { x: targetLane, y: transferY },
-        { x: targetLane, y: finish.y },
-        finish,
-      ],
-    });
-  });
-  return routes;
+    const straight = [start, finish];
+    if (forward && start.y === finish.y &&
+        !routeCrossesCards(straight, positions, edge.from, edge.to)) {
+      result.push({ ...edge, points: straight });
+      continue;
+    }
+    // Depart through the gutter to avoid painting on top of intervening cards.
+    // Use a horizontal lane above/below the destination row to keep branch
+    // labels free even when two siblings share the same visual workstream.
+    const offset = 22 + (index % 3) * 7;
+    const entryX = forward ? finish.x - 20 : finish.x + 20;
+    const exitX = forward
+      ? Math.min(start.x + offset, entryX - 8)
+      : Math.max(start.x + offset, entryX + 8);
+    const candidateYs = [
+      target.y - 30,
+      target.y + OBSERVER_NODE_HEIGHT + 30,
+      source.y - 30,
+      source.y + OBSERVER_NODE_HEIGHT + 30,
+    ];
+    const candidates = candidateYs.map((laneY) => [
+      start,
+      { x: exitX, y: start.y },
+      { x: exitX, y: laneY },
+      { x: entryX, y: laneY },
+      { x: entryX, y: finish.y },
+      finish,
+    ]);
+    const preferred = candidates.find((candidate) =>
+      !routeCrossesCards(candidate, positions, edge.from, edge.to),
+    );
+    // A fallback remains visible if the graph is unusually constrained;
+    // horizontal layout allocates 94px between columns and 126px between rows.
+    result.push({ ...edge, points: preferred ?? candidates[0]! });
+  }
+  return result;
 }
 
 /** One path format for both SVG and Canvas2D, including explicit bend points. */
