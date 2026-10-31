@@ -42,7 +42,23 @@ export function projectDynamicPlan(
     detail: "Plan created by orchestrator",
     result: null,
   };
-  const native = new Map(observed.filter((node) => node.kind === "delegation").map((node) => [node.id, node]));
+  // The planned DAG spans multiple turns. Reconcile all historical native
+  // delegations, not only those from the newest T3 run.
+  const native = new Map(
+    (projection?.subagents ?? []).map((task) => [
+      String(task.id),
+      {
+        id: String(task.id),
+        parentId: null,
+        title: task.title?.trim() || task.prompt.trim().slice(0, 90) || "Delegated task",
+        kind: "delegation" as const,
+        status: task.status,
+        provider: task.model ?? String(task.providerInstanceId),
+        detail: task.prompt,
+        result: task.result,
+      },
+    ]),
+  );
   const taskKey = (id: string) => `plan:${id}`;
   const byNativeId = new Map(plan.tasks.filter((task) => task.boundTaskId !== null)
     .map((task) => [task.boundTaskId!, taskKey(task.id)]));
@@ -59,7 +75,7 @@ export function projectDynamicPlan(
       result: execution?.result ?? task.reason,
     };
   });
-  const extra = observed.slice(1)
+  const extra = [...native.values()]
     .filter((node) => !byNativeId.has(node.id))
     .map((node) => ({
       ...node,
