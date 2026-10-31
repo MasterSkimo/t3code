@@ -92,6 +92,63 @@ describe("dynamic Plotline planning", () => {
     }, now), /assigned task/);
   });
 
+  it("completes an unbound worker discovery but never overrides native execution", () => {
+    const initial = evolvePlan(null, create, now);
+    const delegated = evolvePlan(initial, {
+      kind: "bind", rootThreadId: root, actorThreadId: root,
+      input: { requestId: "bind-A", taskId: "A", delegatedTaskId: "node-A", childThreadId: "child-A" },
+    }, now);
+    const discovered = evolvePlan(delegated, {
+      kind: "add", rootThreadId: root, actorThreadId: "child-A",
+      input: { requestId: "add-A1", task: { id: "A1", title: "Finish A1", parentTaskId: "A" } },
+    }, now);
+    const completed = evolvePlan(discovered, {
+      kind: "update", rootThreadId: root, actorThreadId: "child-A",
+      input: { requestId: "finish-A1", taskId: "A1", planState: "completed" },
+    }, now);
+    assert.equal(completed.tasks.find((task) => task.id === "A1")?.planState, "completed");
+    assert.equal(completed.tasks.find((task) => task.id === "A")?.planState, "planned");
+    assert.throws(() => evolvePlan(completed, {
+      kind: "update", rootThreadId: root, actorThreadId: "child-A",
+      input: { requestId: "fake-native-completion", taskId: "A", planState: "completed" },
+    }, now), /native execution status/);
+    assert.throws(() => evolvePlan(completed, {
+      kind: "update", rootThreadId: root, actorThreadId: "child-B",
+      input: { requestId: "foreign-completion", taskId: "A1", planState: "completed" },
+    }, now), /assigned tasks/);
+    assert.throws(() => evolvePlan(completed, {
+      kind: "bind", rootThreadId: root, actorThreadId: root,
+      input: { requestId: "bind-settled", taskId: "A1", delegatedTaskId: "native-A1", childThreadId: "child-A1" },
+    }, now), /Reset a settled plan task/);
+    const reopened = evolvePlan(completed, {
+      kind: "update", rootThreadId: root, actorThreadId: root,
+      input: { requestId: "reopen-A1", taskId: "A1", planState: "planned" },
+    }, now);
+    assert.equal(reopened.tasks.find((task) => task.id === "A1")?.planState, "planned");
+    assert.equal(evolvePlan(reopened, {
+      kind: "bind", rootThreadId: root, actorThreadId: root,
+      input: { requestId: "bind-reopened", taskId: "A1", delegatedTaskId: "native-A1", childThreadId: "child-A1" },
+    }, now).tasks.find((task) => task.id === "A1")?.boundTaskId, "native-A1");
+  });
+
+  it("persists manual completion and deduplicates a retry without a second revision", () =>
+    Effect.gen(function* () {
+      const store = yield* Store.PlotlineStore;
+      yield* store.mutatePlan(create);
+      const completion = {
+        kind: "update" as const, rootThreadId: root, actorThreadId: root,
+        input: { requestId: "complete-D", taskId: "D", planState: "completed" as const },
+      };
+      const first = yield* store.mutatePlan(completion);
+      const replay = yield* store.mutatePlan(completion);
+      assert.equal(first.revision, 2);
+      assert.equal(replay.revision, 2);
+      assert.equal(replay.updated, false);
+      const persisted = yield* store.getPlan(root);
+      assert.equal(persisted?.tasks.find((task) => task.id === "D")?.planState, "completed");
+    }).pipe(Effect.provide(Store.layerMemory)),
+  );
+
   it("persists plan revisions and deduplicates a retried mutation", () =>
     Effect.gen(function* () {
       const store = yield* Store.PlotlineStore;
