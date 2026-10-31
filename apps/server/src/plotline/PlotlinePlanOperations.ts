@@ -56,7 +56,7 @@ export const assertValidPlan = (plan: Plan): void => {
   for (const task of plan.tasks) visit(task.id);
 };
 
-/** Apply only plan metadata. Running/completed statuses always come from native T3. */
+/** Apply advisory plan metadata. Bound tasks always use native T3 execution status. */
 export const evolvePlan = (current: Plan | null, mutation: PlanMutation, now: string): Plan => {
   const { kind, rootThreadId, actorThreadId, input } = mutation;
   const isRoot = rootThreadId === actorThreadId;
@@ -114,9 +114,12 @@ export const evolvePlan = (current: Plan | null, mutation: PlanMutation, now: st
     if (!isRoot && task.createdByThreadId !== actorThreadId && task.boundThreadId !== actorThreadId)
       throw Error("A worker may update only its own or assigned tasks.");
     if (kind === "update") {
-      if (task.boundTaskId && input.planState && input.planState !== "planned")
+      // Manually completed tasks have no native execution. Bound tasks must
+      // receive their final status from T3's native delegation projection.
+      if (task.boundTaskId !== null && input.planState !== undefined &&
+          input.planState !== "planned")
         throw Error("A bound task's native execution status cannot be overridden.");
-      if (input.planState !== undefined && input.planState !== "planned" &&
+      if ((input.planState === "skipped" || input.planState === "cancelled") &&
           !(input.reason?.trim())) throw Error("Skipped/cancelled plans require a reason.");
       tasks[i] = {
         ...task,
@@ -124,11 +127,13 @@ export const evolvePlan = (current: Plan | null, mutation: PlanMutation, now: st
         detail: input.detail ?? task.detail,
         dependsOn: input.dependsOn === undefined ? task.dependsOn : [...input.dependsOn],
         planState: input.planState ?? task.planState,
-        reason: input.reason ?? task.reason,
+        reason: input.reason ?? (input.planState === "planned" ? null : task.reason),
       };
     } else {
       if (!isRoot && task.createdByThreadId !== actorThreadId)
         throw Error("Workers may bind only subtasks they created.");
+      if (task.boundTaskId === null && task.planState !== "planned")
+        throw Error("Reset a settled plan task to planned before binding native execution.");
       if (tasks.some((other) => other.id !== task.id &&
         (other.boundTaskId === input.delegatedTaskId ||
           other.bindingHistory?.some((attempt) => attempt.delegatedTaskId === input.delegatedTaskId))))
