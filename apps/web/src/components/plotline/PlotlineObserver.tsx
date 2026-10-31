@@ -215,14 +215,8 @@ export function PlotlineObserver({
                 viewBox={`0 0 ${graph.width} ${graph.height}`}
               >
                 <defs>
-                  {/* Glow sits behind the sharp line to keep long connections legible on dark backgrounds. */}
-                  <filter id="plotline-edge-glow" x="-50%" y="-50%" width="200%" height="200%">
-                    <feGaussianBlur stdDeviation="1.8" result="blur" />
-                    <feMerge>
-                      <feMergeNode in="blur" />
-                      <feMergeNode in="SourceGraphic" />
-                    </feMerge>
-                  </filter>
+                  {/* No SVG filter on edges: vertical paths have a zero-width bounding box
+                      and can disappear when a filter is evaluated in objectBoundingBox units. */}
                   <marker
                     id="plotline-dependency-arrow"
                     markerWidth="9"
@@ -254,6 +248,17 @@ export function PlotlineObserver({
                   const middleY = startY + (endY - startY) / 2;
                   return (
                     <g key={`hierarchy:${edge.from}:${edge.to}`} className="text-slate-500 dark:text-slate-300">
+                      {/* Draw the wide translucent stroke first, then a sharp line.
+                          This stays visible even when startX === endX. */}
+                      <path
+                        d={`M ${startX} ${startY} V ${middleY} H ${endX} V ${endY}`}
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth={5}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        opacity={0.25}
+                      />
                       <path
                         d={`M ${startX} ${startY} V ${middleY} H ${endX} V ${endY}`}
                         fill="none"
@@ -261,7 +266,6 @@ export function PlotlineObserver({
                         strokeWidth={2.5}
                         strokeLinecap="round"
                         strokeLinejoin="round"
-                        filter="url(#plotline-edge-glow)"
                       />
                       <circle cx={startX} cy={startY} r={3} fill="currentColor" />
                       <circle cx={endX} cy={endY} r={3} fill="currentColor" />
@@ -289,12 +293,21 @@ export function PlotlineObserver({
                         d={`M ${startX} ${startY} H ${laneX} V ${endY} H ${endX}`}
                         fill="none"
                         stroke="currentColor"
+                        strokeWidth={4.5}
+                        strokeDasharray="7 5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        opacity={0.2}
+                      />
+                      <path
+                        d={`M ${startX} ${startY} H ${laneX} V ${endY} H ${endX}`}
+                        fill="none"
+                        stroke="currentColor"
                         strokeWidth={2.3}
                         strokeDasharray="7 5"
                         strokeLinecap="round"
                         strokeLinejoin="round"
                         markerEnd="url(#plotline-dependency-arrow)"
-                        filter="url(#plotline-edge-glow)"
                       />
                       <circle cx={startX} cy={startY} r={3.5} fill="currentColor" />
                     </g>
