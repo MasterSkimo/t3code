@@ -1,4 +1,5 @@
 import type { ObservedTask } from "./observerModel";
+import { routePlotlineEdges } from "./observerRouting";
 import {
   OBSERVER_NODE_HEIGHT,
   OBSERVER_NODE_WIDTH,
@@ -212,63 +213,38 @@ function drawNode(ctx: CanvasRenderingContext2D, position: ObservedPosition, col
 function drawConnections(
   ctx: CanvasRenderingContext2D,
   input: PlotlinePngInput,
-  positions: Map<string, ObservedPosition>,
   colors: Palette,
 ) {
+  // Use exactly the live observer's obstacle-aware geometry. Never redraw
+  // dependencies as straight lines through cards in the exported image.
+  const routes = routePlotlineEdges(input.nodes, input.edges, input.dependencies);
   ctx.lineJoin = "round";
   ctx.lineCap = "round";
-
-  for (const edge of input.edges) {
-    const from = positions.get(edge.from);
-    const to = positions.get(edge.to);
-    if (!from || !to) continue;
-    const x1 = from.x + OBSERVER_NODE_WIDTH / 2;
-    const y1 = from.y + OBSERVER_NODE_HEIGHT;
-    const x2 = to.x + OBSERVER_NODE_WIDTH / 2;
-    const y2 = to.y;
-    const midY = y1 + (y2 - y1) / 2;
-    ctx.strokeStyle = colors.hierarchy;
-    ctx.lineWidth = 2.5;
-    ctx.setLineDash([]);
+  for (const route of routes) {
+    const hierarchy = route.kind === "hierarchy";
+    ctx.strokeStyle = hierarchy ? colors.hierarchy : colors.dependency;
+    ctx.lineWidth = hierarchy ? 2.5 : 2;
+    ctx.setLineDash(hierarchy ? [] : [7, 5]);
     ctx.beginPath();
-    ctx.moveTo(x1, y1);
-    ctx.lineTo(x1, midY);
-    ctx.lineTo(x2, midY);
-    ctx.lineTo(x2, y2);
+    route.points.forEach((point, index) => {
+      if (index === 0) ctx.moveTo(point.x, point.y);
+      else ctx.lineTo(point.x, point.y);
+    });
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    if (hierarchy || route.points.length < 2) continue;
+    const tip = route.points[route.points.length - 1]!;
+    const before = route.points[route.points.length - 2]!;
+    const dx = Math.sign(tip.x - before.x);
+    const dy = Math.sign(tip.y - before.y);
+    // Arrowhead is oriented by the final routed segment, not by node order.
+    ctx.beginPath();
+    ctx.moveTo(tip.x - dx * 8 - dy * 4, tip.y - dy * 8 + dx * 4);
+    ctx.lineTo(tip.x, tip.y);
+    ctx.lineTo(tip.x - dx * 8 + dy * 4, tip.y - dy * 8 - dx * 4);
     ctx.stroke();
   }
-
-  input.dependencies.forEach((edge, index) => {
-    const from = positions.get(edge.from);
-    const to = positions.get(edge.to);
-    if (!from || !to) return;
-    const right = to.x >= from.x;
-    const x1 = from.x + (right ? OBSERVER_NODE_WIDTH : 0);
-    const x2 = to.x + (right ? OBSERVER_NODE_WIDTH : 0);
-    const lane = right
-      ? Math.max(x1, x2) + 17 + (index % 3) * 5
-      : Math.min(x1, x2) - 17 - (index % 3) * 5;
-    const y1 = from.y + OBSERVER_NODE_HEIGHT / 2;
-    const y2 = to.y + OBSERVER_NODE_HEIGHT / 2;
-    ctx.strokeStyle = colors.dependency;
-    ctx.lineWidth = 2.3;
-    ctx.setLineDash([7, 5]);
-    ctx.beginPath();
-    ctx.moveTo(x1, y1);
-    ctx.lineTo(lane, y1);
-    ctx.lineTo(lane, y2);
-    ctx.lineTo(x2, y2);
-    ctx.stroke();
-    ctx.setLineDash([]);
-
-    // Explicit dependency arrow only; the A1 branch never gains an A1 -> B edge.
-    const arrowDirection = right ? -1 : 1;
-    ctx.beginPath();
-    ctx.moveTo(x2 - arrowDirection * 7, y2 - 4);
-    ctx.lineTo(x2, y2);
-    ctx.lineTo(x2 - arrowDirection * 7, y2 + 4);
-    ctx.stroke();
-  });
 }
 
 /** Offscreen Canvas2D avoids viewport clipping and SVG foreignObject restrictions. */
@@ -295,8 +271,7 @@ export function renderPlotlinePng(input: PlotlinePngInput): HTMLCanvasElement {
 
   ctx.save();
   ctx.translate(MARGIN, MARGIN + HEADER_HEIGHT);
-  const positions = new Map(input.nodes.map((position) => [position.node.id, position]));
-  drawConnections(ctx, input, positions, colors);
+  drawConnections(ctx, input, colors);
   for (const position of input.nodes) drawNode(ctx, position, colors);
   ctx.restore();
   return canvas;
