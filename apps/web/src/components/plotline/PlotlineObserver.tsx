@@ -17,6 +17,7 @@ import { downloadPlotlinePng, isDarkPlotlineSurface } from "./plotlinePng";
 import { plotlineRoutePath, routePlotlineEdges } from "./observerRouting";
 import { usePlotlineBottomStore } from "./plotlineBottomStore";
 import { useTerminalUiStateStore } from "../../terminalUiStateStore";
+import { useRightPanelStore } from "../../rightPanelStore";
 
 /**
  * Read-only execution observer. T3 owns all delegation, scheduling, completion,
@@ -236,6 +237,7 @@ export function PlotlineObserver({
                   // native terminal surface or replacing the right panel.
                   useTerminalUiStateStore.getState().setTerminalOpen(threadRef, true);
                   usePlotlineBottomStore.getState().open(threadRef);
+                  useRightPanelStore.getState().close(threadRef);
                 }}
                 className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] hover:bg-muted"
               >
