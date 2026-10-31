@@ -3831,9 +3831,6 @@ export default function ChatView(props: ChatViewProps) {
             threadRef={activeThreadRef}
             projection={serverProjection}
             height={terminalUiState.terminalHeight}
-            onHeightChange={(height) =>
-              useTerminalUiStateStore.getState().setTerminalHeight(activeThreadRef, height)
-            }
             onClosePanel={() => {
               usePlotlineBottomStore.getState().close(activeThreadRef);
               useTerminalUiStateStore.getState().setTerminalOpen(activeThreadRef, false);
