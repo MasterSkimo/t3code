@@ -14,6 +14,7 @@ import {
   type ObservedTask,
 } from "./observerModel";
 import { downloadPlotlinePng, isDarkPlotlineSurface } from "./plotlinePng";
+import { plotlineRoutePath, routePlotlineEdges } from "./observerRouting";
 
 /**
  * Read-only execution observer. T3 owns all delegation, scheduling, completion,
@@ -118,7 +119,7 @@ export function PlotlineObserver({
   const nodes = stored?.nodes ?? live.nodes;
   const dependencyEdges = stored ? [] : live.dependencies;
   const graph = layoutExecutionGraph(nodes, dependencyEdges);
-  const coordinates = new Map(graph.positions.map((item) => [item.node.id, item]));
+  const routes = routePlotlineEdges(graph.positions, graph.edges, dependencyEdges);
   const selected = nodes.find((node) => node.id === selectedId) ?? null;
   const planProgress = summarizePlanProgress(nodes);
   const running = nodes.filter((node) => ["running", "waiting"].includes(node.status)).length;
@@ -274,80 +275,34 @@ export function PlotlineObserver({
                     />
                   </marker>
                 </defs>
-                {/* Hierarchy edges are solid and are never inferred from plan dependencies. */}
-                {graph.edges.map((edge) => {
-                  const from = coordinates.get(edge.from);
-                  const to = coordinates.get(edge.to);
-                  if (!from || !to) return null;
-                  const startX = from.x + OBSERVER_NODE_WIDTH / 2;
-                  const startY = from.y + OBSERVER_NODE_HEIGHT;
-                  const endX = to.x + OBSERVER_NODE_WIDTH / 2;
-                  const endY = to.y;
-                  const middleY = startY + (endY - startY) / 2;
+                {/* Geometry is shared with PNG export. Routes stay in row gaps
+                    and column gutters instead of crossing other task cards. */}
+                {routes.map((route, index) => {
+                  const hierarchy = route.kind === "hierarchy";
+                  const focused = selectedId === null ||
+                    route.from === selectedId || route.to === selectedId;
+                  const opacity = selectedId !== null
+                    ? (focused ? 1 : 0.12)
+                    : hierarchy ? 0.9 : 0.5;
+                  const d = plotlineRoutePath(route.points);
                   return (
-                    <g key={`hierarchy:${edge.from}:${edge.to}`} className="text-slate-500 dark:text-slate-300">
-                      {/* Draw the wide translucent stroke first, then a sharp line.
-                          This stays visible even when startX === endX. */}
+                    <g
+                      key={`${route.kind}:${route.from}:${route.to}:${index}`}
+                      className={hierarchy
+                        ? "text-slate-500 dark:text-slate-300"
+                        : "text-sky-600 dark:text-sky-300"}
+                      opacity={opacity}
+                    >
                       <path
-                        d={`M ${startX} ${startY} V ${middleY} H ${endX} V ${endY}`}
+                        d={d}
                         fill="none"
                         stroke="currentColor"
-                        strokeWidth={5}
+                        strokeWidth={hierarchy ? 2.5 : 2}
+                        strokeDasharray={hierarchy ? undefined : "7 5"}
                         strokeLinecap="round"
                         strokeLinejoin="round"
-                        opacity={0.25}
+                        markerEnd={hierarchy ? undefined : "url(#plotline-dependency-arrow)"}
                       />
-                      <path
-                        d={`M ${startX} ${startY} V ${middleY} H ${endX} V ${endY}`}
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth={2.5}
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                      <circle cx={startX} cy={startY} r={3} fill="currentColor" />
-                      <circle cx={endX} cy={endY} r={3} fill="currentColor" />
-                    </g>
-                  );
-                })}
-                {/* Dependencies leave the side of the card and use a separate dashed lane.
-                    They do not pass through subtasks placed between prerequisite and dependent. */}
-                {dependencyEdges.map((edge, index) => {
-                  const from = coordinates.get(edge.from);
-                  const to = coordinates.get(edge.to);
-                  if (!from || !to) return null;
-                  const right = to.x >= from.x;
-                  const startX = from.x + (right ? OBSERVER_NODE_WIDTH : 0);
-                  const endX = to.x + (right ? OBSERVER_NODE_WIDTH : 0);
-                  // Preserve the separate side lane: A -> B never routes through subtask A1.
-                  const laneX = right
-                    ? Math.max(startX, endX) + 17 + (index % 3) * 5
-                    : Math.min(startX, endX) - 17 - (index % 3) * 5;
-                  const startY = from.y + OBSERVER_NODE_HEIGHT / 2;
-                  const endY = to.y + OBSERVER_NODE_HEIGHT / 2;
-                  return (
-                    <g key={`dependency:${edge.from}:${edge.to}`} className="text-sky-600 dark:text-sky-300">
-                      <path
-                        d={`M ${startX} ${startY} H ${laneX} V ${endY} H ${endX}`}
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth={4.5}
-                        strokeDasharray="7 5"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        opacity={0.2}
-                      />
-                      <path
-                        d={`M ${startX} ${startY} H ${laneX} V ${endY} H ${endX}`}
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth={2.3}
-                        strokeDasharray="7 5"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        markerEnd="url(#plotline-dependency-arrow)"
-                      />
-                      <circle cx={startX} cy={startY} r={3.5} fill="currentColor" />
                     </g>
                   );
                 })}
