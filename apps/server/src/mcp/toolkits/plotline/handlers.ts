@@ -8,7 +8,7 @@ import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as PlotlineStore from "../../../plotline/PlotlineStore.ts";
-import { retryPendingTaskBinding } from "../../../plotline/PlotlineBindingRetry.ts";
+import { findPendingNativeAssignment, retryPendingTaskBinding } from "../../../plotline/PlotlineBindingRetry.ts";
 import { PlotlineToolkit } from "./tools.ts";
 
 const failure = (message: string) => new PlotlineStorageError({ message });
@@ -53,24 +53,22 @@ const mutate = <I>(kind: "create" | "add" | "update", input: I) =>
             const native = yield* context.threads.getThreadRecords(
               ThreadIdSchema.make(parentThreadId), ["subagents"],
             ).pipe(Effect.mapError(() => failure("Could not inspect native parent delegations.")));
-            const delegation = native.subagents.find(
-              (task) => task.childThreadId !== null &&
-                String(task.childThreadId) === context.actorThreadId,
+            const assignment = findPendingNativeAssignment(
+              plan.tasks,
+              native.subagents.map((task) => ({
+                id: String(task.id),
+                childThreadId: task.childThreadId === null ? null : String(task.childThreadId),
+              })),
+              context.actorThreadId,
             );
-            const assigned = plan.tasks.find(
-              (task) => delegation !== undefined &&
-                task.boundTaskId === String(delegation.id) && task.boundThreadId === null,
-            );
-            if (delegation && assigned)
+            if (assignment)
               yield* store.mutatePlan({
                 kind: "bind",
                 rootThreadId: context.rootThreadId,
                 actorThreadId: parentThreadId,
                 input: {
-                  requestId: `plotline-child-link:${delegation.id}`,
-                  taskId: assigned.id,
-                  delegatedTaskId: String(delegation.id),
-                  childThreadId: context.actorThreadId,
+                  requestId: `plotline-child-link:${assignment.delegatedTaskId}`,
+                  ...assignment,
                 },
               });
           }
