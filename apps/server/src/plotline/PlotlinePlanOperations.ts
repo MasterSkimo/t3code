@@ -108,7 +108,8 @@ export const evolvePlan = (current: Plan | null, mutation: PlanMutation, now: st
         reason: input.reason ?? task.reason,
       };
     } else {
-      if (!isRoot) throw Error("Only the root orchestrator can bind native delegations.");
+      if (!isRoot && task.createdByThreadId !== actorThreadId)
+        throw Error("Workers may bind only subtasks they created.");
       if (tasks.some((other) => other.id !== task.id && other.boundTaskId === input.delegatedTaskId))
         throw Error("Native delegation is already bound to another plan task.");
       if (task.boundTaskId !== null && task.boundTaskId !== input.delegatedTaskId)
