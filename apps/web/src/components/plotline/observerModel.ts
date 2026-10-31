@@ -319,6 +319,86 @@ export function layoutExecutionGraph(
     }
     nextY += rowCount * (OBSERVER_NODE_HEIGHT + VERTICAL_GAP);
   }
+  // A plan with multiple independent branches usually has a second phase:
+  // integration, review and synthesis. These were stacking below the branches
+  // because the original grid had no spare horizontal lanes. Keep branch
+  // columns intact and distribute the dependent phase across right-hand lanes.
+  // This changes presentation only; no ownership or dependency edge is added.
+  let graphWidth = width;
+  let graphHeight = nextY + PADDING;
+  const rootRun = nodes.find((node) => node.parentId === null && node.kind === "run");
+  const phaseRoots = rootRun === undefined ? [] : nodes.filter((node) =>
+    node.kind === "plan" && node.parentId === rootRun.id &&
+    (prerequisites.get(node.id)?.length ?? 0) > 0,
+  );
+  if (branchRoots.length >= 2 && phaseRoots.length >= 2 && nodes.length >= 10) {
+    const phaseRootIds = new Set(phaseRoots.map((node) => node.id));
+    const phaseOwners = new Map<string, string | null>();
+    const ownerOf = (id: string, visiting: Set<string>): string | null => {
+      if (phaseRootIds.has(id)) return id;
+      if (phaseOwners.has(id)) return phaseOwners.get(id)!;
+      if (visiting.has(id)) return null;
+      visiting.add(id);
+      const node = byId.get(id);
+      const owner = node?.parentId ? ownerOf(node.parentId, visiting) : null;
+      visiting.delete(id);
+      phaseOwners.set(id, owner);
+      return owner;
+    };
+    const phaseNodes = nodes.filter((node) => ownerOf(node.id, new Set()) !== null);
+    const phaseIds = new Set(phaseNodes.map((node) => node.id));
+    const originalPositions = new Map(positions.map((position) => [position.node.id, position]));
+    const branchBottom = Math.max(
+      PADDING,
+      ...positions.filter((item) => !phaseIds.has(item.node.id)).map((item) => item.y),
+    );
+    // Each downstream wave gets its own columns. Consecutive steps can share
+    // a visual row when their predecessor is to the left; otherwise wrap.
+    const phaseColumns = Math.min(4, Math.max(2, Math.ceil(phaseRoots.length / 2)));
+    const phaseX = width - PADDING + HORIZONTAL_GAP;
+    const phaseY = branchBottom;
+    const stagePosition = new Map<string, { readonly column: number; readonly row: number }>();
+    const occupied = new Map<number, Set<number>>();
+    const sourceOrder = new Map(nodes.map((node, index) => [node.id, index]));
+    const stage = [...phaseNodes].sort((a, b) =>
+      (levels.get(a.id) ?? 0) - (levels.get(b.id) ?? 0) ||
+      (sourceOrder.get(a.id) ?? 0) - (sourceOrder.get(b.id) ?? 0),
+    );
+    const phaseRootColumn = new Map(phaseRoots.map((node, index) => [
+      node.id, index % phaseColumns,
+    ]));
+    for (const node of stage) {
+      const owner = ownerOf(node.id, new Set())!;
+      const column = phaseRootColumn.get(owner)!;
+      const previous = stagePosition.get(node.parentId ?? "");
+      const dependenciesForNode = prerequisites.get(node.id) ?? [];
+      let row = previous ? previous.row + 1 : 0;
+      for (const dependency of dependenciesForNode) {
+        const predecessor = stagePosition.get(dependency);
+        if (!predecessor) continue;
+        row = Math.max(row, predecessor.row + (predecessor.column >= column ? 1 : 0));
+      }
+      const usedRows = occupied.get(column) ?? new Set<number>();
+      while (usedRows.has(row)) row++;
+      usedRows.add(row);
+      occupied.set(column, usedRows);
+      stagePosition.set(node.id, { column, row });
+      const current = originalPositions.get(node.id);
+      if (!current) continue;
+      const index = positions.findIndex((item) => item.node.id === node.id);
+      positions[index] = {
+        node,
+        x: phaseX + column * (OBSERVER_NODE_WIDTH + HORIZONTAL_GAP),
+        y: phaseY + row * (OBSERVER_NODE_HEIGHT + VERTICAL_GAP),
+      };
+    }
+    graphWidth = phaseX + phaseColumns * OBSERVER_NODE_WIDTH +
+      (phaseColumns - 1) * HORIZONTAL_GAP + PADDING;
+    graphHeight = Math.max(graphHeight, ...positions.map((item) =>
+      item.y + OBSERVER_NODE_HEIGHT + PADDING,
+    ));
+  }
+
   const edges = nodes
     .filter((node) => node.parentId !== null && byId.has(node.parentId))
     // Root-owned tasks with explicit prerequisites are connected through their
@@ -329,8 +409,8 @@ export function layoutExecutionGraph(
       (prerequisites.get(node.id)?.length ?? 0) > 0))
     .map((node) => ({ from: node.parentId!, to: node.id }));
   return {
-    width,
-    height: nextY + PADDING,
+    width: graphWidth,
+    height: graphHeight,
     positions,
     edges,
   };
