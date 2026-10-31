@@ -3,7 +3,7 @@ import type {
   ScopedThreadRef,
 } from "@t3tools/contracts";
 import { X, TerminalSquare } from "lucide-react";
-import { useRef, type PointerEvent } from "react";
+import { useRef, useState, type PointerEvent } from "react";
 
 import { usePlotlineBottomStore } from "./plotlineBottomStore";
 import { PlotlineObserver } from "./PlotlineObserver";
@@ -12,27 +12,29 @@ interface Props {
   readonly threadRef: ScopedThreadRef;
   readonly projection: OrchestrationV2ThreadProjection | null;
   readonly height: number;
-  readonly onHeightChange: (height: number) => void;
   readonly onClosePanel: () => void;
 }
 
 /** A fork-owned Plotline tab above the chat composer, parallel to terminal drawer. */
 export function PlotlineBottomDrawer({
-  threadRef, projection, height, onHeightChange, onClosePanel,
+  threadRef, projection, height, onClosePanel,
 }: Props) {
   const close = usePlotlineBottomStore((state) => state.close);
+  // Initial height favors the DAG. Resizing remains independent from terminal
+  // height preference so the terminal reopens at its previous size.
+  const [drawerHeight, setDrawerHeight] = useState(() => Math.max(480, height));
   const resize = useRef<{ pointerId: number; startY: number; startHeight: number } | null>(null);
   const onResizeStart = (event: PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
     event.preventDefault();
-    resize.current = { pointerId: event.pointerId, startY: event.clientY, startHeight: height };
+    resize.current = { pointerId: event.pointerId, startY: event.clientY, startHeight: drawerHeight };
     event.currentTarget.setPointerCapture(event.pointerId);
   };
   const onResizeMove = (event: PointerEvent<HTMLDivElement>) => {
     const current = resize.current;
     if (!current || current.pointerId !== event.pointerId) return;
     const nextHeight = current.startHeight + current.startY - event.clientY;
-    onHeightChange(Math.max(240, Math.min(nextHeight, window.innerHeight * 0.75)));
+    setDrawerHeight(Math.max(240, Math.min(nextHeight, window.innerHeight * 0.75)));
     event.preventDefault();
   };
   const onResizeStop = (event: PointerEvent<HTMLDivElement>) => {
@@ -44,7 +46,7 @@ export function PlotlineBottomDrawer({
   return (
     <section
       className="relative z-45 flex min-h-0 shrink-0 flex-col border-t border-border bg-background"
-      style={{ height: `min(75vh, ${Math.max(300, height)}px)` }}
+      style={{ height: `min(75vh, ${drawerHeight}px)` }}
       aria-label="Plotline bottom panel"
     >
       <div
