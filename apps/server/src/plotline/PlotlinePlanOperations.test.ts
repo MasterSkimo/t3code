@@ -32,7 +32,11 @@ describe("dynamic Plotline planning", () => {
       kind: "update", rootThreadId: root, actorThreadId: creator,
       input: { requestId: "cycle", taskId: "A", dependsOn: ["D"] },
     }, now), /cycle/);
-    assert.throws(() => evolvePlan(plan, create, now), /already initialized/);
+    // A repeated create is a no-op, even when the original tool response was lost.
+    assert.strictEqual(evolvePlan(plan, create, now), plan);
+    assert.throws(() => evolvePlan(plan, {
+      ...create, input: { ...create.input, title: "Conflicting plan" },
+    }, now), /different tasks/);
   });
 
   it("lets assigned workers discover tasks but prevents cross-worker edits", () => {
@@ -135,6 +139,31 @@ describe("dynamic Plotline planning", () => {
         kind: "bind", rootThreadId: root, actorThreadId: root, previousDelegationTerminal: true,
         input: { requestId: "reuse-old", taskId: "B", delegatedTaskId: "node-A", childThreadId: "child-A" },
       }, now), /another plan task/);
+    }).pipe(Effect.provide(Store.layerMemory)),
+  );
+
+  it("accepts a create without requestId and avoids duplicate revisions on retransmission", () =>
+    Effect.gen(function* () {
+      const store = yield* Store.PlotlineStore;
+      const { requestId: _ignored, ...input } = create.input;
+      const generated = { ...create, input };
+      const first = yield* store.mutatePlan(generated);
+      assert.equal(first.updated, true);
+      const replay = yield* store.mutatePlan(generated);
+      assert.equal(replay.updated, false);
+      assert.equal(replay.revision, 1);
+      const alternateId = yield* store.mutatePlan({
+        ...create, input: { ...create.input, requestId: "different-request-id" },
+      });
+      assert.equal(alternateId.updated, false);
+      assert.equal(alternateId.revision, 1);
+      const plan = yield* store.getPlan(root);
+      assert.equal(plan?.tasks.length, 3);
+      const events = yield* store.mutatePlan({
+        kind: "update", rootThreadId: root, actorThreadId: root,
+        input: { requestId: "done", taskId: "D", planState: "cancelled", reason: "Not needed" },
+      });
+      assert.equal(events.revision, 2);
     }).pipe(Effect.provide(Store.layerMemory)),
   );
 
