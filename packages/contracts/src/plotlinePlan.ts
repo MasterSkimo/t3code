@@ -16,6 +16,11 @@ export const PlotlinePlanTask = Schema.Struct({
   /** Native T3 child and delegated-task IDs, verified when bound. */
   boundThreadId: Schema.NullOr(Schema.String),
   boundTaskId: Schema.NullOr(Schema.String),
+  /** Earlier native attempts, retained after a completed/failed delegation is retried. */
+  bindingHistory: Schema.optional(Schema.Array(Schema.Struct({
+    delegatedTaskId: Schema.String,
+    childThreadId: Schema.NullOr(Schema.String),
+  }))),
 });
 export type PlotlinePlanTask = typeof PlotlinePlanTask.Type;
 
