@@ -145,8 +145,10 @@ describe("dynamic Plotline planning", () => {
   it("accepts a create without requestId and avoids duplicate revisions on retransmission", () =>
     Effect.gen(function* () {
       const store = yield* Store.PlotlineStore;
-      const { requestId: _ignored, ...input } = create.input;
-      const generated = { ...create, input };
+      const generated = {
+        ...create,
+        input: { title: create.input.title, tasks: create.input.tasks },
+      };
       const first = yield* store.mutatePlan(generated);
       assert.equal(first.updated, true);
       const replay = yield* store.mutatePlan(generated);
