@@ -54,6 +54,26 @@ describe("dynamic Plotline planning", () => {
       input: { requestId: "bind-A1", taskId: "A1", delegatedTaskId: "node-native-A1", childThreadId: "child-A1" },
     }, now);
     assert.equal(nestedBound.tasks[3]?.boundTaskId, "node-native-A1");
+    // Retries reuse the planned task once the previous native attempt settled.
+    assert.throws(() => evolvePlan(assigned, {
+      kind: "bind", rootThreadId: root, actorThreadId: root,
+      input: { requestId: "retry-running", taskId: "A", delegatedTaskId: "node-native-A2", childThreadId: "child-A2" },
+    }, now), /must be terminal/);
+    const retried = evolvePlan(assigned, {
+      kind: "bind", rootThreadId: root, actorThreadId: root,
+      previousDelegationTerminal: true,
+      input: { requestId: "retry-finished", taskId: "A", delegatedTaskId: "node-native-A2", childThreadId: "child-A2" },
+    }, now);
+    assert.equal(retried.tasks.length, assigned.tasks.length);
+    assert.equal(retried.tasks[0]?.boundThreadId, "child-A2");
+    assert.deepStrictEqual(retried.tasks[0]?.bindingHistory, [
+      { delegatedTaskId: "node-native-A", childThreadId: "child-A" },
+    ]);
+    const sameAttempt = evolvePlan(retried, {
+      kind: "bind", rootThreadId: root, actorThreadId: root,
+      input: { requestId: "retry-replay", taskId: "A", delegatedTaskId: "node-native-A2", childThreadId: "child-A2" },
+    }, now);
+    assert.deepStrictEqual(sameAttempt.tasks[0]?.bindingHistory, retried.tasks[0]?.bindingHistory);
     assert.throws(() => evolvePlan(updated, {
       kind: "bind", rootThreadId: root, actorThreadId: "child-B",
       input: { requestId: "bad-bind", taskId: "A1", delegatedTaskId: "foreign-node", childThreadId: "other" },
