@@ -5,6 +5,7 @@ import {
   layoutExecutionGraph,
   projectExecutionGraph,
   projectDynamicPlan,
+  summarizePlanProgress,
   type ObservedTask,
 } from "./observerModel";
 
@@ -114,6 +115,58 @@ describe("dynamic Plotline DAG view", () => {
     expect(view.nodes.some((node) => node.id === "sub-current")).toBe(false);
     expect(view.nodes.find((node) => node.id === "plan:A")?.status).toBe("running");
     expect(view.nodes.find((node) => node.id === "plan:A")?.detail).toContain("Previous native attempts: 1");
+  });
+
+  it("shows manual A1 completion while leaving native A and planned B independent", () => {
+    const plan: PlotlinePlan = {
+      rootThreadId: "root", title: "Mutation", revision: 4, updatedAt: "2026-10-31T00:00:00Z",
+      tasks: [
+        {
+          id: "A", title: "A", detail: "", parentTaskId: null, dependsOn: [],
+          planState: "planned", reason: null, createdByThreadId: "root",
+          boundTaskId: "sub-old", boundThreadId: "child-A",
+        },
+        {
+          id: "A1", title: "A1", detail: "", parentTaskId: "A", dependsOn: [],
+          planState: "completed", reason: null, createdByThreadId: "child-A",
+          boundTaskId: null, boundThreadId: null,
+        },
+        {
+          id: "B", title: "B", detail: "", parentTaskId: null, dependsOn: ["A"],
+          planState: "planned", reason: null, createdByThreadId: "root",
+          boundTaskId: null, boundThreadId: null,
+        },
+      ],
+    };
+    const observed = projectDynamicPlan(plan, fixture());
+    const byId = new Map(observed.nodes.map((node) => [node.id, node]));
+    expect(byId.get("plan:A")?.status).toBe("completed");
+    expect(byId.get("plan:A1")?.status).toBe("completed");
+    expect(byId.get("plan:A1")?.detail).toContain("no native T3 execution");
+    expect(byId.get("plan:B")?.status).toBe("planned");
+    expect(summarizePlanProgress(observed.nodes)).toEqual({
+      total: 3, completed: 2, outstanding: 1, status: "open",
+    });
+    const finishedPlan = projectDynamicPlan({
+      ...plan,
+      tasks: plan.tasks.map((task) => task.id === "B" ? { ...task, planState: "completed" as const } : task),
+    }, fixture());
+    expect(summarizePlanProgress(finishedPlan.nodes).status).toBe("completed");
+  });
+
+  it("never masks a bound task whose native execution record is missing", () => {
+    const plan: PlotlinePlan = {
+      rootThreadId: "root", title: "Native", revision: 2, updatedAt: "2026-10-31T00:00:00Z",
+      tasks: [{
+        id: "A", title: "A", detail: "", parentTaskId: null, dependsOn: [],
+        planState: "completed", reason: null, createdByThreadId: "root",
+        boundTaskId: "native-missing", boundThreadId: "child-A",
+      }],
+    };
+    // A stale or corrupt completion must not pretend a native run was successful.
+    const view = projectDynamicPlan(plan, fixture());
+    expect(view.nodes.find((node) => node.id === "plan:A")?.status).toBe("planned");
+    expect(summarizePlanProgress(view.nodes).status).toBe("open");
   });
 
   it("reconciles a bound task across turns without inferring unbound execution", () => {
