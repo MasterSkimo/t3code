@@ -3871,7 +3871,8 @@ export default function ChatView(props: ChatViewProps) {
           onAddPlotline={() => {
             if (activeThreadRef) useRightPanelStore.getState().open(activeThreadRef, "plotline");
           }}
-          plotlineAvailable={serverProjection !== null}
+          // Saved DAGs remain accessible while the native thread projection is unavailable.
+          plotlineAvailable={isServerThread}
           browserAvailable={canOperatePreview && browserAvailable}
           terminalAvailable={activeProject !== null && canOperateTerminal}
           diffAvailable={isServerThread && isGitRepo}
