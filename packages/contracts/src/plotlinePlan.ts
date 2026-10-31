@@ -46,7 +46,8 @@ export const PlotlineTaskDefinition = Schema.Struct({
   dependsOn: Schema.optional(Schema.Array(Schema.String)),
 });
 export const PlotlinePlanCreate = Schema.Struct({
-  requestId: Schema.String,
+  // Optional for model callers. The server derives a stable request ID when omitted.
+  requestId: Schema.optional(Schema.String),
   title: Schema.String,
   tasks: Schema.Array(PlotlineTaskDefinition),
 });
