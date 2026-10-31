@@ -2,7 +2,7 @@ import type { OrchestrationV2ThreadProjection, ScopedThreadRef } from "@t3tools/
 import { plotlineEnvironment } from "../../state/plotline";
 import { useEnvironmentQuery } from "../../state/query";
 import { CheckCircle2, Circle, CornerDownRight, Download, GitFork, LoaderCircle, XCircle } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type PointerEvent } from "react";
 
 import {
   layoutExecutionGraph,
@@ -93,6 +93,19 @@ export function PlotlineObserver({
   readonly threadRef: ScopedThreadRef;
 }) {
   const surfaceRef = useRef<HTMLElement | null>(null);
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  // Keep drag origin outside React state so pointer movement never re-renders
+  // the graph. A small threshold preserves regular node click selection.
+  const dragRef = useRef<{
+    pointerId: number;
+    clientX: number;
+    clientY: number;
+    scrollLeft: number;
+    scrollTop: number;
+    moved: boolean;
+  } | null>(null);
+  const suppressClickRef = useRef(false);
+  const [dragging, setDragging] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -129,6 +142,51 @@ export function PlotlineObserver({
   const delegated = selectedRunId === "live"
     ? (projection?.subagents.length ?? 0)
     : Math.max(0, nodes.length - 1);
+
+  // Dragging the canvas does not trigger T3 actions; it only scrolls this view.
+  const startPan = (event: PointerEvent<HTMLDivElement>) => {
+    // Allow pen/mouse panning, but preserve touch scrolling and context menus.
+    if (event.pointerType === "touch" || event.button !== 0) return;
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    suppressClickRef.current = false;
+    dragRef.current = {
+      pointerId: event.pointerId,
+      clientX: event.clientX,
+      clientY: event.clientY,
+      scrollLeft: viewport.scrollLeft,
+      scrollTop: viewport.scrollTop,
+      moved: false,
+    };
+  };
+
+  const movePan = (event: PointerEvent<HTMLDivElement>) => {
+    const origin = dragRef.current;
+    const viewport = viewportRef.current;
+    if (!origin || !viewport || origin.pointerId !== event.pointerId) return;
+    const dx = event.clientX - origin.clientX;
+    const dy = event.clientY - origin.clientY;
+    if (!origin.moved && Math.hypot(dx, dy) < 5) return;
+    if (!origin.moved) {
+      origin.moved = true;
+      setDragging(true);
+      viewport.setPointerCapture(event.pointerId);
+    }
+    suppressClickRef.current = true;
+    viewport.scrollLeft = origin.scrollLeft - dx;
+    viewport.scrollTop = origin.scrollTop - dy;
+    event.preventDefault();
+  };
+
+  const stopPan = (event: PointerEvent<HTMLDivElement>) => {
+    const viewport = viewportRef.current;
+    if (dragRef.current?.pointerId !== event.pointerId) return;
+    if (viewport?.hasPointerCapture(event.pointerId)) {
+      viewport.releasePointerCapture(event.pointerId);
+    }
+    dragRef.current = null;
+    setDragging(false);
+  };
 
   const exportPng = async () => {
     if (exporting || graph.positions.length === 0) return;
@@ -244,7 +302,30 @@ export function PlotlineObserver({
         </div>
       ) : (
         <>
-          <div className="min-h-0 flex-1 overflow-auto bg-muted/15" aria-label="Execution graph">
+          <div
+            ref={viewportRef}
+            className={`min-h-0 flex-1 overflow-auto bg-muted/15 select-none ${dragging ? "cursor-grabbing" : "cursor-grab"}`}
+            aria-label="Execution graph"
+            title="Hold left mouse button and drag to navigate the graph"
+            onPointerDown={startPan}
+            onPointerMove={movePan}
+            onPointerUp={stopPan}
+            onPointerCancel={stopPan}
+            onLostPointerCapture={(event) => {
+              if (dragRef.current?.pointerId === event.pointerId) {
+                dragRef.current = null;
+                setDragging(false);
+              }
+            }}
+            onClickCapture={(event) => {
+              // A completed drag must not activate the task under the pointer.
+              if (!suppressClickRef.current) return;
+              suppressClickRef.current = false;
+              event.preventDefault();
+              event.stopPropagation();
+            }}
+            onDragStart={(event) => event.preventDefault()}
+          >
             <div className="relative mx-auto" style={{ width: graph.width, height: graph.height }}>
               <svg
                 aria-hidden="true"
