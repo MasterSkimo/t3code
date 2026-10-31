@@ -14,9 +14,14 @@ export const retryPendingTaskBinding = <A, R>(
 ): Effect.Effect<A, PlotlineStorageError, R> =>
   Effect.gen(function* () {
     for (let attempt = 0; ; attempt++) {
-      const result = yield* Effect.either(mutation);
-      if (result._tag === "Right") return result.right;
-      const error = result.left;
+      // Effect v4 removed Effect.either. Catch only typed failures so a
+      // runtime defect is never misclassified as "binding pending".
+      const result = yield* mutation.pipe(
+        Effect.map((value) => ({ ok: true as const, value })),
+        Effect.catch((error) => Effect.succeed({ ok: false as const, error })),
+      );
+      if (result.ok) return result.value;
+      const error = result.error;
       const awaitingBinding =
         error.message === "A worker may add subtasks only under its assigned task." ||
         error.message === "A worker may update only its own or assigned tasks.";
