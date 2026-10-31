@@ -49,7 +49,10 @@ plan evolves independently of T3's run execution and native delegation metadata.
   updates are wrapped in a single SQLite transaction and are idempotent.
 - `plotline_plan_create`: initial tasks and dependency IDs (root orchestrator only).
 - `plotline_task_add`: append a new task (workers only under an assigned/owned task).
-- `plotline_task_update`: revise details/prerequisites or mark skipped/cancelled with a reason.
+- `plotline_task_update`: revise details/prerequisites or mark an **unbound** plan-only task
+  `completed` (no reason required), `skipped` or `cancelled` (reason required).
+  A worker may settle its own discovered subtask; the root may settle unbound
+  subtasks. Bound-task execution states remain exclusively native T3 data.
 - `plotline_task_bind`: the delegating agent binds the actual T3 delegated `taskId` to its owned plan node.
   The server verifies the native task exists and derives the child thread ID itself.
 - Browser view uses the existing authenticated `plotline.plan.get` RPC and refreshes while open.
@@ -60,7 +63,14 @@ older runs in the same conversation. Unbound native delegations remain visible.
 
 Solid connectors show hierarchy. Dashed connectors show functional prerequisites. Invalid
 dependencies, duplicate IDs, cycles and unrelated worker edits are rejected. The plan remains
-visible before any delegation, including tasks marked skipped or cancelled.
+visible before any delegation, including tasks marked completed, skipped or cancelled.
+
+Plan progress is separate from the conversation's native run status: an unbound
+`completed` task represents an agent-reported plan result, not a T3 execution.
+The panel shows `Plan open` while tasks remain unresolved, then `Plan completed`
+when all tasks are completed/skipped/cancelled. Failed native tasks keep the plan
+failed. Plotline does **not** launch B when A settles: Terra must dispatch B
+through native `delegate_task` once its dependencies are satisfied.
 
 Provider instructions mention the tools **only when the user requested Plotline/DAG tracking**.
 The existing unplanned conversation observer remains the fallback when no plan is initialized.
