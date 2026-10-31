@@ -2,6 +2,7 @@ import {
   ThreadId as ThreadIdSchema,
   PlotlineStorageError,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 
 import * as McpToolAccess from "../../McpToolAccess.ts";
@@ -85,7 +86,15 @@ const mutate = <I>(kind: "create" | "add" | "update", input: I) =>
   });
 
 const handlers = {
-  plotline_plan_create: McpToolAccess.actsAsCaller((input) => mutate("create", input)),
+  plotline_plan_create: McpToolAccess.actsAsCaller((input) =>
+    // Keep the typed MCP failure intact, but record unexpected server defects
+    // and storage errors rather than leaving the agent with "internal error".
+    mutate("create", input).pipe(
+      Effect.tapErrorCause((cause) =>
+        Effect.logError(`Plotline plan initialization failed: ${Cause.pretty(cause)}`),
+      ),
+    ),
+  ),
   plotline_task_add: McpToolAccess.actsAsCaller((input) => mutate("add", input)),
   plotline_task_update: McpToolAccess.actsAsCaller((input) => mutate("update", input)),
   plotline_task_bind: McpToolAccess.actsAsCaller((input) =>
