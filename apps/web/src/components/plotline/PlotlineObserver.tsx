@@ -28,7 +28,6 @@ function statusStyle(status: string): string {
     case "running":
       return "text-sky-600 dark:text-sky-400";
     case "failed":
-    case "cancelled":
     case "interrupted":
       return "text-rose-600 dark:text-rose-400";
     default:
