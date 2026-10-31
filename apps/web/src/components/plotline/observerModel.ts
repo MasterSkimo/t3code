@@ -75,12 +75,16 @@ export function projectDynamicPlan(
       parentId: task.parentTaskId === null ? root.id : taskKey(task.parentTaskId),
       title: task.title,
       kind: "plan",
-      status: execution?.status ?? task.planState,
+      // An unbound completion is a plan assertion, not a native execution.
+      // Bound tasks always display the native T3 delegation status.
+      status: execution?.status ?? (task.boundTaskId === null ? task.planState : "planned"),
       provider: execution?.provider ??
         (task.createdByThreadId === plan.rootThreadId ? "Planned by orchestrator" : "Discovered by worker"),
       detail: [
         task.detail,
         task.reason ? `Plan reason: ${task.reason}` : "",
+        task.boundTaskId === null && task.planState === "completed"
+          ? "Completed in plan by agent (no native T3 execution)" : "",
         (task.bindingHistory?.length ?? 0) > 0
           ? `Previous native attempts: ${task.bindingHistory!.length}` : "",
       ].filter(Boolean).join("\n") || "Awaiting delegation",
@@ -98,6 +102,22 @@ export function projectDynamicPlan(
     task.dependsOn.map((id) => ({ from: taskKey(id), to: taskKey(task.id) })),
   );
   return { nodes: [root, ...tasks, ...extra], dependencies };
+}
+
+/** Plan settlement is separate from the latest conversation run's native status. */
+export function summarizePlanProgress(nodes: readonly ObservedTask[]) {
+  const planTasks = nodes.filter((node) => node.kind === "plan");
+  const completed = planTasks.filter((node) => node.status === "completed").length;
+  const failures = planTasks.filter((node) => ["failed", "interrupted"].includes(node.status)).length;
+  const outstanding = planTasks.filter((node) =>
+    !["completed", "skipped", "cancelled", "failed", "interrupted"].includes(node.status),
+  ).length;
+  return {
+    total: planTasks.length,
+    completed,
+    outstanding,
+    status: failures > 0 ? "failed" : outstanding === 0 && planTasks.length > 0 ? "completed" : "open",
+  } as const;
 }
 
 export const OBSERVER_NODE_WIDTH = 216;
