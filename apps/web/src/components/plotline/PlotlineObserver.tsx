@@ -1,7 +1,7 @@
 import type { OrchestrationV2ThreadProjection, ScopedThreadRef } from "@t3tools/contracts";
 import { plotlineEnvironment } from "../../state/plotline";
 import { useEnvironmentQuery } from "../../state/query";
-import { CheckCircle2, Circle, CornerDownRight, Download, GitFork, LoaderCircle, XCircle } from "lucide-react";
+import { CheckCircle2, Circle, CornerDownRight, Download, GitFork, PanelBottom, LoaderCircle, XCircle } from "lucide-react";
 import { useEffect, useRef, useState, type PointerEvent } from "react";
 
 import {
@@ -15,6 +15,8 @@ import {
 } from "./observerModel";
 import { downloadPlotlinePng, isDarkPlotlineSurface } from "./plotlinePng";
 import { plotlineRoutePath, routePlotlineEdges } from "./observerRouting";
+import { usePlotlineBottomStore } from "./plotlineBottomStore";
+import { useTerminalUiStateStore } from "../../terminalUiStateStore";
 
 /**
  * Read-only execution observer. T3 owns all delegation, scheduling, completion,
@@ -88,9 +90,11 @@ function ObservedNodeCard({
 export function PlotlineObserver({
   projection,
   threadRef,
+  placement = "right",
 }: {
   readonly projection: OrchestrationV2ThreadProjection | null;
   readonly threadRef: ScopedThreadRef;
+  readonly placement?: "right" | "bottom";
 }) {
   const surfaceRef = useRef<HTMLElement | null>(null);
   const viewportRef = useRef<HTMLDivElement | null>(null);
@@ -222,6 +226,23 @@ export function PlotlineObserver({
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
+            {placement === "right" ? (
+              <button
+                type="button"
+                title="Show this DAG in the bottom panel"
+                aria-label="Open Plotline in bottom panel"
+                onClick={() => {
+                  // Reuse the existing bottom drawer instead of creating a new
+                  // native terminal surface or replacing the right panel.
+                  useTerminalUiStateStore.getState().setTerminalOpen(threadRef, true);
+                  usePlotlineBottomStore.getState().open(threadRef);
+                }}
+                className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] hover:bg-muted"
+              >
+                <PanelBottom className="size-3.5" aria-hidden="true" />
+                Bottom
+              </button>
+            ) : null}
             <button
               type="button"
               onClick={() => { void exportPng(); }}
