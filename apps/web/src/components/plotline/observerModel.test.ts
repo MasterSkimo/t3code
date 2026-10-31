@@ -154,6 +154,62 @@ describe("dynamic Plotline DAG view", () => {
     expect(summarizePlanProgress(finishedPlan.nodes).status).toBe("completed");
   });
 
+  it("separates a nested A1 subtask from B's dependency on A without inventing A1 -> B", () => {
+    const plan: PlotlinePlan = {
+      rootThreadId: "root", title: "Hierarchy and dependency", revision: 1,
+      updatedAt: "2026-10-31T00:00:00Z",
+      tasks: [
+        {
+          id: "A", title: "A", detail: "", parentTaskId: null, dependsOn: [],
+          planState: "planned", reason: null, createdByThreadId: "root",
+          boundTaskId: null, boundThreadId: null,
+        },
+        {
+          id: "A1", title: "A1", detail: "", parentTaskId: "A", dependsOn: [],
+          planState: "planned", reason: null, createdByThreadId: "child-A",
+          boundTaskId: null, boundThreadId: null,
+        },
+        {
+          id: "B", title: "B", detail: "", parentTaskId: null, dependsOn: ["A"],
+          planState: "planned", reason: null, createdByThreadId: "root",
+          boundTaskId: null, boundThreadId: null,
+        },
+      ],
+    };
+    const view = projectDynamicPlan(plan, null);
+    expect(view.nodes.find((node) => node.id === "plan:A1")?.isSubtask).toBe(true);
+    expect(view.nodes.find((node) => node.id === "plan:B")?.isSubtask).toBe(false);
+    expect(view.dependencies).toEqual([{ from: "plan:A", to: "plan:B" }]);
+
+    const graph = layoutExecutionGraph(view.nodes, view.dependencies);
+    expect(graph.edges).toContainEqual({ from: "plan:A", to: "plan:A1" });
+    expect(graph.edges).toContainEqual({ from: "plan-root:root", to: "plan:A" });
+    expect(graph.edges).not.toContainEqual({ from: "plan:A1", to: "plan:B" });
+    expect(graph.edges).not.toContainEqual({ from: "plan-root:root", to: "plan:B" });
+    const positions = new Map(graph.positions.map((position) => [position.node.id, position]));
+    expect((positions.get("plan:B")?.y ?? 0)).toBeGreaterThan(positions.get("plan:A1")?.y ?? 0);
+  });
+
+  it("keeps real dependencies before display-only subtask spacing", () => {
+    const plan: PlotlinePlan = {
+      rootThreadId: "root", title: "Order", revision: 1,
+      updatedAt: "2026-10-31T00:00:00Z",
+      tasks: [
+        { id: "A", title: "A", detail: "", parentTaskId: null, dependsOn: [], planState: "planned", reason: null, createdByThreadId: "root", boundTaskId: null, boundThreadId: null },
+        { id: "A1", title: "A1", detail: "", parentTaskId: "A", dependsOn: ["B"], planState: "planned", reason: null, createdByThreadId: "child-A", boundTaskId: null, boundThreadId: null },
+        { id: "B", title: "B", detail: "", parentTaskId: null, dependsOn: ["A"], planState: "planned", reason: null, createdByThreadId: "root", boundTaskId: null, boundThreadId: null },
+      ],
+    };
+    const view = projectDynamicPlan(plan, null);
+    const graph = layoutExecutionGraph(view.nodes, view.dependencies);
+    const positions = new Map(graph.positions.map((position) => [position.node.id, position.y]));
+    expect((positions.get("plan:B") ?? 0)).toBeLessThan(positions.get("plan:A1") ?? 0);
+    expect(view.dependencies).toEqual([
+      { from: "plan:B", to: "plan:A1" },
+      { from: "plan:A", to: "plan:B" },
+    ]);
+  });
+
   it("never masks a bound task whose native execution record is missing", () => {
     const plan: PlotlinePlan = {
       rootThreadId: "root", title: "Native", revision: 2, updatedAt: "2026-10-31T00:00:00Z",
