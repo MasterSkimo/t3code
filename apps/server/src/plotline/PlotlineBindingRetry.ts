@@ -1,4 +1,4 @@
-import { PlotlineStorageError } from "@t3tools/contracts";
+import { PlotlineStorageError, type PlotlinePlanTask } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
 /**
@@ -32,3 +32,26 @@ export const retryPendingTaskBinding = <A, R>(
       yield* Effect.sleep("250 millis");
     }
   });
+
+/**
+ * Recover a worker's native child identity only when exactly one planned task
+ * is already bound to that native delegation and awaits its child-thread ID.
+ * The caller must first verify the real native parent/child thread lineage.
+ */
+export const findPendingNativeAssignment = (
+  tasks: ReadonlyArray<Pick<PlotlinePlanTask, "id" | "boundTaskId" | "boundThreadId">>,
+  nativeTasks: ReadonlyArray<{ readonly id: string; readonly childThreadId: string | null }>,
+  actorThreadId: string,
+): { readonly taskId: string; readonly delegatedTaskId: string; readonly childThreadId: string } | null => {
+  const native = nativeTasks.find((item) => item.childThreadId === actorThreadId);
+  if (!native) return null;
+  const candidates = tasks.filter(
+    (task) => task.boundTaskId === native.id && task.boundThreadId === null,
+  );
+  if (candidates.length !== 1) return null;
+  return {
+    taskId: candidates[0]!.id,
+    delegatedTaskId: native.id,
+    childThreadId: actorThreadId,
+  };
+};
