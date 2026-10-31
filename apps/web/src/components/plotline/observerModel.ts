@@ -70,8 +70,10 @@ export function projectDynamicPlan(
       title: task.title,
       kind: "plan",
       status: execution?.status ?? task.planState,
-      provider: execution?.provider ?? null,
-      detail: task.detail || (task.reason ?? "Awaiting delegation"),
+      provider: execution?.provider ??
+        (task.createdByThreadId === plan.rootThreadId ? "Planned by orchestrator" : "Discovered by worker"),
+      detail: [task.detail, task.reason ? `Plan reason: ${task.reason}` : ""]
+        .filter(Boolean).join("\\n") || "Awaiting delegation",
       result: execution?.result ?? task.reason,
     };
   });
