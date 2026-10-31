@@ -49,10 +49,10 @@ const handlers = {
   plotline_task_bind: McpToolAccess.actsAsCaller((input) =>
     Effect.gen(function* () {
       const context = yield* caller;
-      if (context.actorThreadId !== context.rootThreadId)
-        return yield* failure("Only the root orchestrator may bind a native delegation.");
+      // Verify against the actor's real thread, so a delegated worker may
+      // bind only tasks it actually spawned (not sibling/root delegations).
       const records = yield* context.threads.getThreadRecords(
-        ThreadIdSchema.make(context.rootThreadId), ["subagents"],
+        ThreadIdSchema.make(context.actorThreadId), ["subagents"],
       ).pipe(Effect.mapError(() => failure("Could not inspect native delegation.")));
       const task = records.subagents.find((item) => String(item.id) === input.delegatedTaskId);
       if (!task) return yield* failure("The native T3 delegated task does not exist in this conversation.");
