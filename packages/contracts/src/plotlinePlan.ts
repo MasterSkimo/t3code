@@ -71,3 +71,9 @@ export const PlotlinePlanMutationResult = Schema.Struct({
 export const PLOTLINE_PLAN_METHODS = {
   get: "plotline.plan.get",
 } as const;
+
+export type PlotlinePlanCreate = typeof PlotlinePlanCreate.Type;
+export type PlotlineTaskAdd = typeof PlotlineTaskAdd.Type;
+export type PlotlineTaskUpdate = typeof PlotlineTaskUpdate.Type;
+export type PlotlineTaskBind = typeof PlotlineTaskBind.Type;
+export type PlotlinePlanMutationResult = typeof PlotlinePlanMutationResult.Type;
