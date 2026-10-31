@@ -5,6 +5,21 @@ import {
   type ObservedPosition,
 } from "./observerModel";
 
+/** Sample the actual Plotline surface so exports follow T3's light/dark setting. */
+export function isDarkPlotlineSurface(element: HTMLElement | null): boolean {
+  if (!element) return true;
+  const probe = document.createElement("canvas");
+  probe.width = 1;
+  probe.height = 1;
+  const ctx = probe.getContext("2d", { willReadFrequently: true });
+  if (!ctx) return getComputedStyle(element).colorScheme.includes("dark");
+  ctx.fillStyle = getComputedStyle(element).backgroundColor;
+  ctx.fillRect(0, 0, 1, 1);
+  const [r, g, b, alpha] = ctx.getImageData(0, 0, 1, 1).data;
+  if (alpha === 0) return getComputedStyle(element).colorScheme.includes("dark");
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b < 140;
+}
+
 /** Render the complete DAG using its model coordinates, not the clipped viewport. */
 export interface PlotlinePngInput {
   readonly title: string;
