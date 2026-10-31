@@ -90,7 +90,7 @@ const handlers = {
     // Keep the typed MCP failure intact, but record unexpected server defects
     // and storage errors rather than leaving the agent with "internal error".
     mutate("create", input).pipe(
-      Effect.tapErrorCause((cause) =>
+      Effect.tapCause((cause) =>
         Effect.logError(`Plotline plan initialization failed: ${Cause.pretty(cause)}`),
       ),
     ),
