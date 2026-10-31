@@ -68,6 +68,52 @@ describe("Plotline live and PNG routing", () => {
     expect(routes.filter((route) => route.kind === "dependency")).toHaveLength(3);
   });
 
+  it("expands a 21-node festival DAG into horizontal review lanes", () => {
+    const nodes = [
+      node("root", null),
+      node("attendance", "root"), node("capacity", "root"), node("energy", "root"),
+      node("attendance-1", "attendance", true), node("capacity-1", "capacity", true),
+      node("energy-1", "energy", true),
+      node("attendance-2", "attendance", true), node("capacity-2", "capacity", true),
+      node("energy-2", "energy", true),
+      node("attendance-3", "attendance", true), node("capacity-3", "capacity", true),
+      node("energy-3", "energy", true),
+      node("budget", "root"), node("logistics", "root"),
+      node("integration", "root"), node("resolution", "root"),
+      node("resolution-1", "resolution", true), node("summary", "root"),
+      node("verification", "root"), node("verification-1", "verification", true),
+    ];
+    const dependencies = [
+      { from: "attendance", to: "budget" },
+      { from: "capacity", to: "logistics" },
+      { from: "energy", to: "logistics" },
+      { from: "budget", to: "integration" },
+      { from: "logistics", to: "integration" },
+      { from: "integration", to: "resolution" },
+      { from: "resolution-1", to: "summary" },
+      { from: "summary", to: "verification" },
+    ];
+    expect(nodes).toHaveLength(21);
+    const graph = layoutExecutionGraph(nodes, dependencies);
+    const byId = new Map(graph.positions.map((position) => [position.node.id, position]));
+    const initialBranches = ["attendance", "capacity", "energy"].map((id) => byId.get(id)!);
+    const stageRoots = ["budget", "logistics", "integration", "resolution", "summary", "verification"]
+      .map((id) => byId.get(id)!);
+    const furthestBranch = Math.max(...initialBranches.map((position) => position.x));
+    expect(Math.min(...stageRoots.map((position) => position.x)))
+      .toBeGreaterThan(furthestBranch);
+    expect(new Set(stageRoots.map((position) => position.x)).size).toBeGreaterThanOrEqual(3);
+    expect(graph.width).toBeGreaterThan(1_800);
+    // The last six stages should occupy multiple columns, not six stacked rows.
+    expect(new Set(stageRoots.map((position) => position.y)).size).toBeLessThan(6);
+    expect(byId.get("verification-1")?.x).toBe(byId.get("verification")?.x);
+    const occupied = new Set(graph.positions.map((position) => `${position.x}:${position.y}`));
+    expect(occupied.size).toBe(graph.positions.length);
+    // Horizontal placement only: the export and live view retain original links.
+    expect(graph.edges).toContainEqual({ from: "resolution", to: "resolution-1" });
+    expect(dependencies).not.toContainEqual({ from: "resolution-1", to: "verification" });
+  });
+
   it("does not connect unrelated cards through a large vertical gap", () => {
     const nodes = [
       node("root", null), node("A", "root"), node("other", "root"),
