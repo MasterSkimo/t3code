@@ -49,6 +49,15 @@ describe("dynamic Plotline planning", () => {
       },
     }, now);
     assert.equal(updated.tasks[3]?.createdByThreadId, "child-A");
+    const nestedBound = evolvePlan(updated, {
+      kind: "bind", rootThreadId: root, actorThreadId: "child-A",
+      input: { requestId: "bind-A1", taskId: "A1", delegatedTaskId: "node-native-A1", childThreadId: "child-A1" },
+    }, now);
+    assert.equal(nestedBound.tasks[3]?.boundTaskId, "node-native-A1");
+    assert.throws(() => evolvePlan(updated, {
+      kind: "bind", rootThreadId: root, actorThreadId: "child-B",
+      input: { requestId: "bad-bind", taskId: "A1", delegatedTaskId: "foreign-node", childThreadId: "other" },
+    }, now), /only subtasks they created/);
     assert.throws(() => evolvePlan(updated, {
       kind: "update", rootThreadId: root, actorThreadId: "child-B",
       input: { requestId: "foreign", taskId: "A1", title: "Unauthorized" },
