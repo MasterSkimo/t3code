@@ -38,7 +38,7 @@ const Update = Tool.make("plotline_task_update", {
   .annotate(Tool.Destructive, false).annotate(Tool.Idempotent, true);
 
 const Bind = Tool.make("plotline_task_bind", {
-  description: "Root orchestrator only: bind a planned task to an actual native T3 delegated-task ID returned by delegate_task. Binding lets Plotline display real T3 status/model, never drives execution.",
+  description: "Bind a task you planned to a real native T3 delegated-task ID returned by delegate_task. A worker may bind only subtasks it created. Binding lets Plotline display real T3 status/model, never drives execution.",
   parameters: PlotlineTaskBind, success: PlotlinePlanMutationResult, failure,
   failureMode: "return", dependencies,
 }).annotate(Tool.Title, "Bind native T3 delegation to plan")
