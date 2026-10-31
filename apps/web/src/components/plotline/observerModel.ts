@@ -60,8 +60,14 @@ export function projectDynamicPlan(
     ]),
   );
   const taskKey = (id: string) => `plan:${id}`;
-  const byNativeId = new Map(plan.tasks.filter((task) => task.boundTaskId !== null)
-    .map((task) => [task.boundTaskId!, taskKey(task.id)]));
+  // An earlier native retry remains an attempt of the same planned task.
+  // Do not render its historical delegate as a new, unplanned DAG node.
+  const byNativeId = new Map(plan.tasks.flatMap((task) =>
+    [
+      ...(task.boundTaskId === null ? [] : [task.boundTaskId]),
+      ...(task.bindingHistory ?? []).map((attempt) => attempt.delegatedTaskId),
+    ].map((nativeId) => [nativeId, taskKey(task.id)] as const),
+  ));
   const tasks: ObservedTask[] = plan.tasks.map((task) => {
     const execution = task.boundTaskId === null ? undefined : native.get(task.boundTaskId);
     return {
@@ -72,8 +78,12 @@ export function projectDynamicPlan(
       status: execution?.status ?? task.planState,
       provider: execution?.provider ??
         (task.createdByThreadId === plan.rootThreadId ? "Planned by orchestrator" : "Discovered by worker"),
-      detail: [task.detail, task.reason ? `Plan reason: ${task.reason}` : ""]
-        .filter(Boolean).join("\n") || "Awaiting delegation",
+      detail: [
+        task.detail,
+        task.reason ? `Plan reason: ${task.reason}` : "",
+        (task.bindingHistory?.length ?? 0) > 0
+          ? `Previous native attempts: ${task.bindingHistory!.length}` : "",
+      ].filter(Boolean).join("\n") || "Awaiting delegation",
       result: execution?.result ?? task.reason,
     };
   });
