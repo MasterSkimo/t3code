@@ -12,11 +12,15 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
 import { ServerConfig } from "../config.ts";
 import * as Migration001 from "./migrations/001_PlotlineDagSnapshots.ts";
+import * as Migration002 from "./migrations/002_DynamicPlans.ts";
 
 const MIGRATIONS: ReadonlyArray<{
   readonly version: number;
   readonly statements: ReadonlyArray<string>;
-}> = [{ version: Migration001.VERSION, statements: Migration001.STATEMENTS }];
+}> = [
+  { version: Migration001.VERSION, statements: Migration001.STATEMENTS },
+  { version: Migration002.VERSION, statements: Migration002.STATEMENTS },
+];
 
 /** Append-only migration runner with transactional version tracking. */
 export const migrateForkDatabase = Effect.gen(function* () {
