@@ -17,6 +17,7 @@ export const STATEMENTS: ReadonlyArray<string> = [
     revision INTEGER NOT NULL,
     actor_thread_id TEXT NOT NULL,
     operation TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
     created_at TEXT NOT NULL,
     PRIMARY KEY(root_thread_id, request_id),
     UNIQUE(root_thread_id, revision)
