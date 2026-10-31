@@ -34,6 +34,18 @@ describe("Plotline worker binding race", () => {
     ), null);
   });
 
+  it.effect("allows a root plan create through the same wrapper without a binding", () =>
+    Effect.gen(function* () {
+      let calls = 0;
+      const result = yield* retryPendingTaskBinding(Effect.sync(() => {
+        calls++;
+        return { rootThreadId: "root", revision: 1, updated: true };
+      }), false);
+      assert.deepStrictEqual(result, { rootThreadId: "root", revision: 1, updated: true });
+      assert.equal(calls, 1);
+    }),
+  );
+
   it.effect("retries an idempotent worker mutation until the parent binds its delegation", () =>
     Effect.gen(function* () {
       let attempts = 0;
@@ -50,15 +62,15 @@ describe("Plotline worker binding race", () => {
   it.effect("does not retry authorization errors outside the caller's branch", () =>
     Effect.gen(function* () {
       let attempts = 0;
-      const result = yield* Effect.either(retryPendingTaskBinding(
+      const result = yield* retryPendingTaskBinding(
         Effect.suspend(() => {
           attempts++;
           return Effect.fail(new PlotlineStorageError({ message: "Task ID already exists." }));
         }),
         true,
         3,
-      ));
-      assert.equal(result._tag, "Left");
+      ).pipe(Effect.catch((error) => Effect.succeed(error)));
+      assert.match(result.message, /Task ID already exists/);
       assert.equal(attempts, 1);
     }),
   );
@@ -70,13 +82,13 @@ describe("Plotline worker binding race", () => {
         calls++;
         return Effect.fail(unbound());
       });
-      const root = yield* Effect.either(retryPendingTaskBinding(mutation, false));
-      assert.equal(root._tag, "Left");
+      const root = yield* retryPendingTaskBinding(mutation, false)
+        .pipe(Effect.catch((error) => Effect.succeed(error)));
+      assert.match(root.message, /only under its assigned task/);
       assert.equal(calls, 1);
-      const worker = yield* Effect.either(retryPendingTaskBinding(mutation, true, 0));
-      assert.equal(worker._tag, "Left");
-      if (worker._tag === "Left")
-        assert.match(worker.left.message, /parent must call plotline_task_bind/);
+      const worker = yield* retryPendingTaskBinding(mutation, true, 0)
+        .pipe(Effect.catch((error) => Effect.succeed(error)));
+      assert.match(worker.message, /parent must call plotline_task_bind/);
       assert.equal(calls, 2);
     }),
   );
