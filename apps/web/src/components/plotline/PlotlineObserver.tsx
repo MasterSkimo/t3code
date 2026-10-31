@@ -1,7 +1,7 @@
 import type { OrchestrationV2ThreadProjection, ScopedThreadRef } from "@t3tools/contracts";
 import { plotlineEnvironment } from "../../state/plotline";
 import { useEnvironmentQuery } from "../../state/query";
-import { CheckCircle2, Circle, GitFork, LoaderCircle, XCircle } from "lucide-react";
+import { CheckCircle2, Circle, CornerDownRight, GitFork, LoaderCircle, XCircle } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import {
@@ -54,16 +54,23 @@ function ObservedNodeCard({
   readonly selected: boolean;
   readonly onSelect: () => void;
 }) {
+  const isSubtask = node.kind === "plan" && node.isSubtask === true;
+  const typeStyle = isSubtask
+    ? "w-[calc(100%-20px)] border-violet-500/65 bg-violet-500/[0.08] border-l-[3px] border-l-violet-500 dark:bg-violet-500/[0.12]"
+    : node.kind === "plan"
+      ? "border-sky-500/50 bg-sky-500/[0.04] dark:bg-sky-500/[0.07]"
+      : "border-border bg-card";
   return (
     <button
       type="button"
       onClick={onSelect}
       aria-pressed={selected}
-      className={`flex h-full w-full flex-col gap-2 overflow-hidden rounded-xl border bg-card p-3 text-left shadow-sm transition-colors hover:bg-muted/40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary ${selected ? "border-primary ring-1 ring-primary" : "border-border"}`}
+      className={`mx-auto flex h-full flex-col gap-2 overflow-hidden rounded-xl border p-3 text-left shadow-sm transition-colors hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary ${typeStyle} ${selected ? "ring-2 ring-primary" : ""} ${isSubtask ? "" : "w-full"}`}
     >
       <div className="flex w-full min-w-0 items-center justify-between gap-2">
-        <span className="truncate text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-          {node.kind === "run" ? "Conversation" : node.kind === "plan" ? "Planned task" : "Subagent"}
+        <span className={`flex min-w-0 items-center gap-1 truncate text-[10px] font-semibold uppercase tracking-wider ${isSubtask ? "text-violet-600 dark:text-violet-300" : "text-muted-foreground"}`}>
+          {isSubtask ? <CornerDownRight className="size-3 shrink-0" aria-hidden="true" /> : null}
+          {node.kind === "run" ? "Conversation" : isSubtask ? "Sub Task" : node.kind === "plan" ? "Task" : "Subagent"}
         </span>
         <span className="flex items-center gap-1 text-[10px]">
           <StatusIcon status={node.status} />
@@ -178,6 +185,14 @@ export function PlotlineObserver({
             {skipped > 0 ? <span>{skipped} skipped/cancelled</span> : null}
           </div>
         ) : null}
+        {plan ? (
+          <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[10px] text-muted-foreground" aria-label="Plotline graph legend">
+            <span className="inline-flex items-center gap-1.5"><span className="size-2.5 rounded-[3px] border border-sky-500 bg-sky-500/15" />Task</span>
+            <span className="inline-flex items-center gap-1.5"><span className="size-2.5 rounded-[3px] border border-violet-500 bg-violet-500/15" />Sub Task</span>
+            <span className="inline-flex items-center gap-1.5"><span className="w-5 border-t border-current" />Parent / child</span>
+            <span className="inline-flex items-center gap-1.5"><span className="w-5 border-t border-dashed border-current" />Dependency</span>
+          </div>
+        ) : null}
       </header>
 
       {nodes.length === 0 ? (
@@ -199,9 +214,8 @@ export function PlotlineObserver({
                 height={graph.height}
                 viewBox={`0 0 ${graph.width} ${graph.height}`}
               >
-                {[...graph.edges.map((edge) => ({ ...edge, relation: "parent" as const })),
-                  ...dependencyEdges.map((edge) => ({ ...edge, relation: "dependency" as const }))]
-                  .map((edge) => {
+                {/* Hierarchy edges are solid and are never inferred from plan dependencies. */}
+                {graph.edges.map((edge) => {
                   const from = coordinates.get(edge.from);
                   const to = coordinates.get(edge.to);
                   if (!from || !to) return null;
@@ -212,13 +226,37 @@ export function PlotlineObserver({
                   const middleY = startY + (endY - startY) / 2;
                   return (
                     <path
-                      key={`${edge.from}:${edge.to}`}
+                      key={`hierarchy:${edge.from}:${edge.to}`}
                       d={`M ${startX} ${startY} V ${middleY} H ${endX} V ${endY}`}
                       fill="none"
                       stroke="currentColor"
                       strokeWidth={1.5}
-                      strokeDasharray={edge.relation === "dependency" ? "5 5" : undefined}
-                      opacity={edge.relation === "dependency" ? 0.65 : 1}
+                    />
+                  );
+                })}
+                {/* Dependencies leave the side of the card and use a separate dashed lane.
+                    They do not pass through subtasks placed between prerequisite and dependent. */}
+                {dependencyEdges.map((edge, index) => {
+                  const from = coordinates.get(edge.from);
+                  const to = coordinates.get(edge.to);
+                  if (!from || !to) return null;
+                  const right = to.x >= from.x;
+                  const startX = from.x + (right ? OBSERVER_NODE_WIDTH : 0);
+                  const endX = to.x + (right ? OBSERVER_NODE_WIDTH : 0);
+                  const laneX = right
+                    ? Math.max(startX, endX) + 16 + (index % 3) * 6
+                    : Math.min(startX, endX) - 16 - (index % 3) * 6;
+                  const startY = from.y + OBSERVER_NODE_HEIGHT / 2;
+                  const endY = to.y + OBSERVER_NODE_HEIGHT / 2;
+                  return (
+                    <path
+                      key={`dependency:${edge.from}:${edge.to}`}
+                      d={`M ${startX} ${startY} H ${laneX} V ${endY} H ${endX}`}
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth={1.5}
+                      strokeDasharray="5 5"
+                      opacity={0.75}
                     />
                   );
                 })}
