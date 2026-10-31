@@ -110,7 +110,11 @@ export function PlotlineObserver({
   const selected = nodes.find((node) => node.id === selectedId) ?? null;
   const running = nodes.filter((node) => ["running", "waiting"].includes(node.status)).length;
   const completed = nodes.filter((node) => node.status === "completed").length;
-  const failed = nodes.filter((node) => ["failed", "cancelled", "interrupted"].includes(node.status)).length;
+  const failed = nodes.filter((node) => ["failed", "interrupted"].includes(node.status)).length;
+  const skipped = nodes.filter((node) => ["skipped", "cancelled"].includes(node.status)).length;
+  const delegated = selectedRunId === "live"
+    ? (projection?.subagents.length ?? 0)
+    : Math.max(0, nodes.length - 1);
 
   return (
     <section className="flex h-full min-h-0 flex-col bg-background text-foreground" aria-label="Plotline execution observer">
@@ -142,7 +146,7 @@ export function PlotlineObserver({
             </select>
             <button
               type="button"
-              onClick={saved.refresh}
+              onClick={() => { saved.refresh(); planQuery.refresh(); }}
               className="rounded-md border border-border px-2 py-1 text-[11px]"
               title="Reload saved DAGs"
             >
@@ -159,10 +163,12 @@ export function PlotlineObserver({
         ) : null}
         {nodes.length > 0 ? (
           <div className="mt-3 flex flex-wrap gap-3 text-[11px] text-muted-foreground">
-            <span>{nodes.length - 1} delegated</span>
+            {plan ? <span>{plan.tasks.length} planned</span> : null}
+            <span>{delegated} delegated</span>
             <span>{running} active</span>
             <span>{completed} completed</span>
-            {failed > 0 ? <span>{failed} failed</span> : null}
+            {failed > 0 ? <span>{failed} failed/interrupted</span> : null}
+            {skipped > 0 ? <span>{skipped} skipped/cancelled</span> : null}
           </div>
         ) : null}
       </header>
