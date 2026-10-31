@@ -8,6 +8,7 @@ import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as PlotlineStore from "../../../plotline/PlotlineStore.ts";
+import { retryPendingTaskBinding } from "../../../plotline/PlotlineBindingRetry.ts";
 import { PlotlineToolkit } from "./tools.ts";
 
 const failure = (message: string) => new PlotlineStorageError({ message });
@@ -37,9 +38,15 @@ const mutate = <I>(kind: "create" | "add" | "update", input: I) =>
   Effect.gen(function* () {
     const context = yield* caller;
     const store = yield* PlotlineStore.PlotlineStore;
-    return yield* store.mutatePlan({
-      kind, rootThreadId: context.rootThreadId, actorThreadId: context.actorThreadId, input,
-    } as Parameters<typeof store.mutatePlan>[0]);
+    // A child can call this tool before the parent has received and bound the
+    // native delegation ID. Retry the original idempotent mutation only while
+    // waiting for that binding; never bypass branch ownership checks.
+    return yield* retryPendingTaskBinding(
+      store.mutatePlan({
+        kind, rootThreadId: context.rootThreadId, actorThreadId: context.actorThreadId, input,
+      } as Parameters<typeof store.mutatePlan>[0]),
+      context.actorThreadId !== context.rootThreadId && kind !== "create",
+    );
   });
 
 const handlers = {
