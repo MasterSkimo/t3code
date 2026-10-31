@@ -39,6 +39,21 @@ The integration touches only UI registrations in `ChatView.tsx`, `RightPanelTabs
 
 Delete Plotline-owned files and revert the small imports/registrations listed above. Remove the `fork.sqlite` file (and any `-wal`/`-shm` companions) only when the T3 server is stopped. No upstream state migration or repair is required.
 
+## Export PNG
+
+The Plotline header exposes **Export PNG** for both the live DAG and historical
+run snapshots. The export renders **all graph positions**, not just the visible
+scroll area, including nested tasks, status indicators, solid hierarchy edges
+and dashed native plan dependencies.
+
+- Uses an offscreen Canvas2D renderer (no external dependency, backend call,
+  or changes to native T3 execution).
+- Exports at 2× resolution when the DAG fits a bounded 32-million-pixel budget;
+  very large diagrams scale down, and excessive allocations return an error.
+- Follows the current light/dark surface theme.
+- Uses a sanitized `plotline-<title>-YYYY-MM-DD.png` download name.
+- The browser/Electron download mechanism determines the save destination.
+
 ## Dynamic task plans (fork migration 002)
 
 Terra initializes one task plan per root conversation. Workers discover nested tasks; the
