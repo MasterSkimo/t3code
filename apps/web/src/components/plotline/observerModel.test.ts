@@ -98,6 +98,24 @@ describe("dynamic Plotline DAG view", () => {
     expect(byId.get("plan:A")).toBe(byId.get("plan:B"));
   });
 
+  it("keeps previous native attempts inside the same planned task after retry", () => {
+    const plan: PlotlinePlan = {
+      rootThreadId: "root", title: "Retry", revision: 3, updatedAt: "2026-10-31T00:00:00Z",
+      tasks: [{
+        id: "A", title: "A", detail: "", parentTaskId: null, dependsOn: [],
+        planState: "planned", reason: null, createdByThreadId: "root",
+        boundTaskId: "sub-current", boundThreadId: "child-new",
+        bindingHistory: [{ delegatedTaskId: "sub-old", childThreadId: "child-old" }],
+      }],
+    };
+    const view = projectDynamicPlan(plan, fixture());
+    expect(view.nodes.filter((node) => node.id === "plan:A")).toHaveLength(1);
+    expect(view.nodes.some((node) => node.id === "sub-old")).toBe(false);
+    expect(view.nodes.some((node) => node.id === "sub-current")).toBe(false);
+    expect(view.nodes.find((node) => node.id === "plan:A")?.status).toBe("running");
+    expect(view.nodes.find((node) => node.id === "plan:A")?.detail).toContain("Previous native attempts: 1");
+  });
+
   it("reconciles a bound task across turns without inferring unbound execution", () => {
     const plan: PlotlinePlan = {
       rootThreadId: "root", title: "Audit", revision: 2, updatedAt: "2026-10-31T00:00:00Z",
