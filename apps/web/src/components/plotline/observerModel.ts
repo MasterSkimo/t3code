@@ -125,9 +125,10 @@ export function summarizePlanProgress(nodes: readonly ObservedTask[]) {
 
 export const OBSERVER_NODE_WIDTH = 216;
 export const OBSERVER_NODE_HEIGHT = 106;
-const HORIZONTAL_GAP = 36;
-const VERTICAL_GAP = 70;
-const PADDING = 36;
+// Leave gutters between branches for routed dependencies, and row gaps for bends.
+const HORIZONTAL_GAP = 112;
+const VERTICAL_GAP = 88;
+const PADDING = 70;
 
 /** Only the latest run and children actually linked to it are included. */
 export function projectExecutionGraph(
@@ -261,25 +262,60 @@ export function layoutExecutionGraph(
     group.push(node);
     groups.set(level, group);
   }
-  // Bound horizontal growth: a mission with many workers must remain navigable
-  // in T3's right panel rather than creating a single enormous sibling row.
+  // A stable column per root workstream prevents subtasks drifting sideways
+  // when other branches grow. Dependent summary tasks inherit the centre of
+  // their prerequisite branches rather than being centred anew on every row.
   const maxColumns = Math.min(4, Math.max(1, ...[...groups.values()].map((group) => group.length)));
   const width = PADDING * 2 + maxColumns * OBSERVER_NODE_WIDTH + (maxColumns - 1) * HORIZONTAL_GAP;
+  const branchRoots = nodes.filter((node) =>
+    node.parentId !== null && byId.get(node.parentId)?.kind === "run" &&
+    (prerequisites.get(node.id)?.length ?? 0) === 0,
+  );
+  const branchIndex = new Map(branchRoots.map((node, index) => [node.id, index % maxColumns]));
+  const preferred = new Map<string, number>();
+  const preferredColumn = (id: string, visiting: Set<string>): number => {
+    const existing = preferred.get(id);
+    if (existing !== undefined) return existing;
+    if (visiting.has(id)) return (maxColumns - 1) / 2;
+    visiting.add(id);
+    const node = byId.get(id);
+    const deps = prerequisites.get(id) ?? [];
+    let value: number;
+    if (branchIndex.has(id)) value = branchIndex.get(id)!;
+    else if (node?.parentId !== null && node?.parentId !== undefined &&
+             byId.get(node.parentId)?.kind !== "run") {
+      value = preferredColumn(node.parentId, visiting);
+    } else if (deps.length > 0) {
+      value = deps.reduce((sum, dep) => sum + preferredColumn(dep, visiting), 0) / deps.length;
+    } else value = (maxColumns - 1) / 2;
+    visiting.delete(id);
+    preferred.set(id, value);
+    return value;
+  };
   const positions: ObservedPosition[] = [];
   let nextY = PADDING;
-  for (const [level, group] of [...groups].sort(([a], [b]) => a - b)) {
+  for (const [, group] of [...groups].sort(([a], [b]) => a - b)) {
     const rowCount = Math.ceil(group.length / maxColumns);
     for (let row = 0; row < rowCount; row++) {
       const chunk = group.slice(row * maxColumns, (row + 1) * maxColumns);
-      const rowWidth = chunk.length * OBSERVER_NODE_WIDTH + (chunk.length - 1) * HORIZONTAL_GAP;
-      const offset = (width - rowWidth) / 2;
-      chunk.forEach((node, column) =>
+      const used = new Set<number>();
+      // Assign work to its existing lane first; only collision siblings move.
+      const ordered = chunk.map((node, index) => ({
+        node, index, target: preferredColumn(node.id, new Set()),
+      })).sort((a, b) => a.target - b.target || a.index - b.index);
+      for (const item of ordered) {
+        const columns = Array.from({ length: maxColumns }, (_, index) => index)
+          .filter((index) => !used.has(index));
+        const column = columns.sort((a, b) =>
+          Math.abs(a - item.target) - Math.abs(b - item.target) || a - b,
+        )[0]!;
+        used.add(column);
         positions.push({
-          node,
-          x: offset + column * (OBSERVER_NODE_WIDTH + HORIZONTAL_GAP),
+          node: item.node,
+          x: PADDING + column * (OBSERVER_NODE_WIDTH + HORIZONTAL_GAP),
           y: nextY + row * (OBSERVER_NODE_HEIGHT + VERTICAL_GAP),
-        }),
-      );
+        });
+      }
     }
     nextY += rowCount * (OBSERVER_NODE_HEIGHT + VERTICAL_GAP);
   }
