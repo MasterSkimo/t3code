@@ -64,8 +64,23 @@ const handlers = {
       const task = records.subagents.find((item) => String(item.id) === input.delegatedTaskId);
       if (!task) return yield* failure("The native T3 delegated task does not exist in this conversation.");
       const store = yield* PlotlineStore.PlotlineStore;
+      const current = yield* store.getPlan(context.rootThreadId);
+      const assigned = current?.tasks.find((candidate) => candidate.id === input.taskId);
+      const previousId = assigned?.boundTaskId;
+      const replacing = previousId !== null && previousId !== undefined &&
+        previousId !== input.delegatedTaskId;
+      // A native retry may replace a finished execution, but never steal the
+      // binding from a running sibling or erase an earlier attempt.
+      const previous = replacing
+        ? records.subagents.find((item) => String(item.id) === previousId)
+        : undefined;
+      const previousDelegationTerminal = previous !== undefined &&
+        ["completed", "failed", "cancelled", "interrupted"].includes(previous.status);
+      if (replacing && !previousDelegationTerminal)
+        return yield* failure("The previous native delegation is not terminal or is not owned by this thread.");
       return yield* store.mutatePlan({
         kind: "bind", rootThreadId: context.rootThreadId, actorThreadId: context.actorThreadId,
+        previousDelegationTerminal,
         input: { ...input, childThreadId: task.childThreadId === null ? null : String(task.childThreadId) },
       });
     }),
