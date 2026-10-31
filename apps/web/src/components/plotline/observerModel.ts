@@ -1,4 +1,4 @@
-import type { OrchestrationV2ThreadProjection } from "@t3tools/contracts";
+import type { OrchestrationV2ThreadProjection, PlotlinePlan } from "@t3tools/contracts";
 
 /**
  * Plotline is only a projection of T3's existing execution data.
@@ -8,7 +8,7 @@ export interface ObservedTask {
   readonly id: string;
   readonly parentId: string | null;
   readonly title: string;
-  readonly kind: "run" | "delegation";
+  readonly kind: "run" | "delegation" | "plan";
   readonly status: string;
   readonly provider: string | null;
   readonly detail: string;
@@ -19,6 +19,56 @@ export interface ObservedPosition {
   readonly node: ObservedTask;
   readonly x: number;
   readonly y: number;
+}
+
+
+/**
+ * Overlay advisory plan nodes on native T3 execution. A native status is used
+ * only when the planned task is explicitly bound to a real delegated task ID.
+ * Never guess execution state by task title or model response.
+ */
+export function projectDynamicPlan(
+  plan: PlotlinePlan,
+  projection: Pick<OrchestrationV2ThreadProjection, "thread" | "runs" | "subagents"> | null,
+): { readonly nodes: readonly ObservedTask[]; readonly dependencies: readonly { from: string; to: string }[] } {
+  const observed = projectExecutionGraph(projection);
+  const root: ObservedTask = observed[0] ?? {
+    id: `plan-root:${plan.rootThreadId}`,
+    parentId: null,
+    title: plan.title,
+    kind: "run",
+    status: "planned",
+    provider: null,
+    detail: "Plan created by orchestrator",
+    result: null,
+  };
+  const native = new Map(observed.filter((node) => node.kind === "delegation").map((node) => [node.id, node]));
+  const taskKey = (id: string) => `plan:${id}`;
+  const byNativeId = new Map(plan.tasks.filter((task) => task.boundTaskId !== null)
+    .map((task) => [task.boundTaskId!, taskKey(task.id)]));
+  const tasks: ObservedTask[] = plan.tasks.map((task) => {
+    const execution = task.boundTaskId === null ? undefined : native.get(task.boundTaskId);
+    return {
+      id: taskKey(task.id),
+      parentId: task.parentTaskId === null ? root.id : taskKey(task.parentTaskId),
+      title: task.title,
+      kind: "plan",
+      status: execution?.status ?? task.planState,
+      provider: execution?.provider ?? null,
+      detail: task.detail || (task.reason ?? "Awaiting delegation"),
+      result: execution?.result ?? task.reason,
+    };
+  });
+  const extra = observed.slice(1)
+    .filter((node) => !byNativeId.has(node.id))
+    .map((node) => ({
+      ...node,
+      parentId: node.parentId === null ? root.id : (byNativeId.get(node.parentId) ?? root.id),
+    }));
+  const dependencies = plan.tasks.flatMap((task) =>
+    task.dependsOn.map((id) => ({ from: taskKey(id), to: taskKey(task.id) })),
+  );
+  return { nodes: [root, ...tasks, ...extra], dependencies };
 }
 
 export const OBSERVER_NODE_WIDTH = 216;
@@ -70,19 +120,33 @@ export function projectExecutionGraph(
  * Layer by recorded delegation parent IDs. Parallel children share a level;
  * sibling order is visual only and never implies a task dependency.
  */
-export function layoutExecutionGraph(nodes: readonly ObservedTask[]) {
+export function layoutExecutionGraph(
+  nodes: readonly ObservedTask[],
+  dependencies: readonly { readonly from: string; readonly to: string }[] = [],
+) {
   if (nodes.length === 0) {
     return { width: 0, height: 0, positions: [] as readonly ObservedPosition[], edges: [] as readonly { from: string; to: string }[] };
   }
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const levels = new Map<string, number>();
+  const prerequisites = new Map<string, string[]>();
+  for (const edge of dependencies) {
+    if (!byId.has(edge.from) || !byId.has(edge.to)) continue;
+    const list = prerequisites.get(edge.to) ?? [];
+    list.push(edge.from);
+    prerequisites.set(edge.to, list);
+  }
   const depth = (id: string, visiting: Set<string>): number => {
     const known = levels.get(id);
     if (known !== undefined) return known;
     const node = byId.get(id);
-    if (!node || !node.parentId || !byId.has(node.parentId) || visiting.has(id)) return 0;
+    if (!node || visiting.has(id)) return 0;
     visiting.add(id);
-    const next = depth(node.parentId, visiting) + 1;
+    const parents = [
+      ...(node.parentId !== null && byId.has(node.parentId) ? [node.parentId] : []),
+      ...(prerequisites.get(id) ?? []),
+    ];
+    const next = parents.length === 0 ? 0 : Math.max(...parents.map((parent) => depth(parent, visiting) + 1));
     visiting.delete(id);
     levels.set(id, next);
     return next;
