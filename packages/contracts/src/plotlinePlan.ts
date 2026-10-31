@@ -1,7 +1,7 @@
 import * as Schema from "effect/Schema";
 
-/** Plan states are advisory. Only T3 can supply an execution status. */
-export const PlotlinePlanState = Schema.Literals(["planned", "skipped", "cancelled"]);
+/** A completed unbound task is agent-reported plan progress, never a native T3 execution result. */
+export const PlotlinePlanState = Schema.Literals(["planned", "completed", "skipped", "cancelled"]);
 export type PlotlinePlanState = typeof PlotlinePlanState.Type;
 
 export const PlotlinePlanTask = Schema.Struct({
