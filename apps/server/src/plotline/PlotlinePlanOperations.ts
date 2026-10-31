@@ -9,6 +9,7 @@ import {
   type PlotlinePlanMutationResult as MutationResult,
   type PlotlinePlanTask as PlanTask,
 } from "@t3tools/contracts";
+import { createHash } from "node:crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -61,13 +62,30 @@ export const evolvePlan = (current: Plan | null, mutation: PlanMutation, now: st
   const isRoot = rootThreadId === actorThreadId;
   if (kind === "create") {
     if (!isRoot) throw Error("Only the root orchestrator may initialize the plan.");
-    if (current) throw Error("Plan already initialized.");
     const tasks: PlanTask[] = input.tasks.map((task) => ({
       id: task.id, title: task.title, detail: task.detail ?? "",
       parentTaskId: task.parentTaskId ?? null, dependsOn: [...(task.dependsOn ?? [])],
       planState: "planned", reason: null, createdByThreadId: actorThreadId,
       boundThreadId: null, boundTaskId: null,
     }));
+    // A tool result can be lost after the first transaction committed. Allow
+    // a second identical initialization (even with another requestId) without
+    // overwriting the existing plan or its native bindings.
+    if (current) {
+      const equivalent = current.title === input.title &&
+        current.tasks.length === tasks.length &&
+        tasks.every((task, index) => {
+          const existing = current.tasks[index];
+          return existing?.id === task.id &&
+            existing.title === task.title &&
+            existing.detail === task.detail &&
+            existing.parentTaskId === task.parentTaskId &&
+            existing.createdByThreadId === actorThreadId &&
+            JSON.stringify(existing.dependsOn) === JSON.stringify(task.dependsOn);
+        });
+      if (equivalent) return current;
+      throw Error("Plan already initialized with different tasks; use the task mutation tools.");
+    }
     const plan: Plan = { rootThreadId, title: input.title, tasks, revision: 1, updatedAt: now };
     assertValidPlan(plan);
     return plan;
@@ -162,9 +180,17 @@ export const makePlanOperations = (sql: SqlClient.SqlClient) => {
   const mutatePlan = (mutation: PlanMutation): Effect.Effect<MutationResult, PlotlineStorageError> =>
     sql.withTransaction(
       Effect.gen(function* () {
-        const id = mutation.input.requestId;
-        if (!id.trim() || id.length > 128) return yield* fail("Invalid request ID.");
         const requestJson = JSON.stringify(mutation.input);
+        // A missing request ID is not a model error. Hash the typed request so
+        // an identical retry gets the same receipt after a connection failure.
+        const id = mutation.input.requestId ??
+          `auto-${createHash("sha256").update([
+            mutation.rootThreadId,
+            mutation.actorThreadId,
+            mutation.kind,
+            requestJson,
+          ].join("\\0")).digest("hex")}`;
+        if (!id.trim() || id.length > 128) return yield* fail("Invalid request ID.");
         const receipts = yield* sql<{
           readonly revision: number;
           readonly operation: string;
@@ -187,6 +213,10 @@ export const makePlanOperations = (sql: SqlClient.SqlClient) => {
           try: () => evolvePlan(previous, mutation, now),
           catch: (error) => fail(error instanceof Error ? error.message : "Invalid plan mutation."),
         });
+        // Identical creations with a different requestId are also no-ops.
+        // Do not insert a duplicate revision into the unique event index.
+        if (plan === previous)
+          return { rootThreadId: plan.rootThreadId, revision: plan.revision, updated: false };
         const json = yield* Effect.try({
           try: () => encode(plan),
           catch: () => fail("Could not serialize Plotline plan."),
