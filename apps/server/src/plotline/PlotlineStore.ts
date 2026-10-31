@@ -12,6 +12,8 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ForkDatabase from "../fork/ForkDatabase.ts";
+import { makePlanOperations, type PlanMutation } from "./PlotlinePlanOperations.ts";
+import type { PlotlinePlan, PlotlinePlanMutationResult } from "@t3tools/contracts";
 
 const decodeSnapshot = Schema.decodeUnknownSync(Schema.fromJsonString(PlotlineDagSnapshot));
 const encodeSnapshot = Schema.encodeSync(Schema.fromJsonString(PlotlineDagSnapshot));
@@ -27,6 +29,8 @@ export class PlotlineStore extends Context.Service<
       Effect.Effect<{ readonly dags: ReadonlyArray<PlotlineDagSnapshotType> }, PlotlineStorageError>;
     readonly save: (input: PlotlineSaveInputType) =>
       Effect.Effect<PlotlineDagSnapshotType, PlotlineStorageError>;
+    readonly getPlan: (rootThreadId: string) => Effect.Effect<PlotlinePlan | null, PlotlineStorageError>;
+    readonly mutatePlan: (mutation: PlanMutation) => Effect.Effect<PlotlinePlanMutationResult, PlotlineStorageError>;
   }
 >()("t3/plotline/PlotlineStore") {}
 
@@ -87,7 +91,7 @@ const make = Effect.gen(function* () {
       return record;
     });
 
-  return PlotlineStore.of({ list, save });
+  return PlotlineStore.of({ list, save, ...makePlanOperations(sql) });
 });
 
 /** Service only exports PlotlineStore. The isolated SQLite client stays private. */
@@ -111,6 +115,8 @@ export const optionalLayer = layer.pipe(
           PlotlineStore.of({
             list: () => Effect.fail(failure("Plotline storage is unavailable.")),
             save: () => Effect.fail(failure("Plotline storage is unavailable.")),
+            getPlan: () => Effect.fail(failure("Plotline storage is unavailable.")),
+            mutatePlan: () => Effect.fail(failure("Plotline storage is unavailable.")),
           }),
         ),
       ),
