@@ -61,9 +61,14 @@ plan evolves independently of T3's run execution and native delegation metadata.
 T3 work. Execution state and model information come from native T3 subagent records, including
 older runs in the same conversation. Unbound native delegations remain visible.
 
-Solid connectors show hierarchy. Dashed connectors show functional prerequisites. Invalid
-dependencies, duplicate IDs, cycles and unrelated worker edits are rejected. The plan remains
-visible before any delegation, including tasks marked completed, skipped or cancelled.
+Solid connectors show parent/child hierarchy. Purple, indented `Sub Task` cards represent
+nested work; blue `Task` cards represent root-level plan work. Dashed side-routed
+arrows represent only explicit `dependsOn` prerequisites. For A with child A1
+and a separate B depending on A, B is drawn below A1 for readability, but
+there is **no A1 -> B dependency**: layout-only spacing edges are never emitted.
+Invalid dependencies, duplicate IDs, cycles and unrelated worker edits are
+rejected. The plan remains visible before any delegation, including tasks
+marked completed, skipped or cancelled.
 
 Plan progress is separate from the conversation's native run status: an unbound
 `completed` task represents an agent-reported plan result, not a T3 execution.
