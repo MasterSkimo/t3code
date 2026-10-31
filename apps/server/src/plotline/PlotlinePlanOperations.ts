@@ -143,11 +143,23 @@ export const makePlanOperations = (sql: SqlClient.SqlClient) => {
       Effect.gen(function* () {
         const id = mutation.input.requestId;
         if (!id.trim() || id.length > 128) return yield* fail("Invalid request ID.");
-        const receipts = yield* sql<{ readonly revision: number }>`
-          SELECT revision FROM fork_plotline_plan_events
+        const requestJson = JSON.stringify(mutation.input);
+        const receipts = yield* sql<{
+          readonly revision: number;
+          readonly operation: string;
+          readonly actor_thread_id: string;
+          readonly payload_json: string;
+        }>`
+          SELECT revision, operation, actor_thread_id, payload_json FROM fork_plotline_plan_events
           WHERE root_thread_id = ${mutation.rootThreadId} AND request_id = ${id}
         `;
-        if (receipts.length) return { rootThreadId: mutation.rootThreadId, revision: receipts[0]!.revision, updated: false };
+        if (receipts.length) {
+          const receipt = receipts[0]!;
+          if (receipt.operation !== mutation.kind ||
+              receipt.actor_thread_id !== mutation.actorThreadId ||
+              receipt.payload_json !== requestJson) return yield* fail("Request ID reused with different data.");
+          return { rootThreadId: mutation.rootThreadId, revision: receipt.revision, updated: false };
+        }
         const previous = yield* getPlan(mutation.rootThreadId);
         const now = DateTime.formatIso(DateTime.toUtc(yield* DateTime.now));
         const plan = yield* Effect.try({
@@ -167,8 +179,8 @@ export const makePlanOperations = (sql: SqlClient.SqlClient) => {
         `;
         yield* sql`
           INSERT INTO fork_plotline_plan_events
-            (root_thread_id, request_id, revision, actor_thread_id, operation, created_at)
-          VALUES (${plan.rootThreadId}, ${id}, ${plan.revision}, ${mutation.actorThreadId}, ${mutation.kind}, ${now})
+            (root_thread_id, request_id, revision, actor_thread_id, operation, payload_json, created_at)
+          VALUES (${plan.rootThreadId}, ${id}, ${plan.revision}, ${mutation.actorThreadId}, ${mutation.kind}, ${requestJson}, ${now})
         `;
         return { rootThreadId: plan.rootThreadId, revision: plan.revision, updated: true };
       }),
