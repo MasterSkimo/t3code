@@ -15,7 +15,7 @@ export function isDarkPlotlineSurface(element: HTMLElement | null): boolean {
   if (!ctx) return getComputedStyle(element).colorScheme.includes("dark");
   ctx.fillStyle = getComputedStyle(element).backgroundColor;
   ctx.fillRect(0, 0, 1, 1);
-  const [r, g, b, alpha] = ctx.getImageData(0, 0, 1, 1).data;
+  const [r = 0, g = 0, b = 0, alpha = 255] = ctx.getImageData(0, 0, 1, 1).data;
   if (alpha === 0) return getComputedStyle(element).colorScheme.includes("dark");
   return 0.2126 * r + 0.7152 * g + 0.0722 * b < 140;
 }
@@ -191,7 +191,14 @@ function drawNode(ctx: CanvasRenderingContext2D, position: ObservedPosition, col
   const label = node.kind === "run" ? "CONVERSATION" :
     subtask ? "SUB TASK" : node.kind === "plan" ? "TASK" : "SUBAGENT";
   ctx.fillText(label, x + 13, y + 22);
-  drawStatus(ctx, node, x + width - 19, y + 18, colors);
+  // Preserve the native status text alongside its icon in the downloaded image.
+  const statusWidth = ctx.measureText(node.status).width;
+  const statusX = x + width - 13 - statusWidth;
+  drawStatus(ctx, node, statusX - 10, y + 18, colors);
+  ctx.fillStyle = node.status === "completed" ? colors.success
+    : node.status === "failed" || node.status === "interrupted" ? colors.failure
+      : node.status === "running" ? colors.dependency : colors.muted;
+  ctx.fillText(node.status, statusX, y + 22);
 
   ctx.fillStyle = colors.foreground;
   ctx.font = "600 12px Inter, system-ui, sans-serif";
