@@ -2,13 +2,38 @@ import { assert, describe, it } from "@effect/vitest";
 import { PlotlineStorageError } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
-import { retryPendingTaskBinding } from "./PlotlineBindingRetry.ts";
+import { findPendingNativeAssignment, retryPendingTaskBinding } from "./PlotlineBindingRetry.ts";
 
 const unbound = () => new PlotlineStorageError({
   message: "A worker may add subtasks only under its assigned task.",
 });
 
 describe("Plotline worker binding race", () => {
+  it("recovers only a verified native child awaiting its thread ID", () => {
+    const tasks = [
+      { id: "A", boundTaskId: "native-A", boundThreadId: null },
+      { id: "B", boundTaskId: "native-B", boundThreadId: null },
+    ];
+    const delegations = [
+      { id: "native-A", childThreadId: "child-A" },
+      { id: "native-B", childThreadId: "child-B" },
+    ];
+    assert.deepStrictEqual(findPendingNativeAssignment(tasks, delegations, "child-A"), {
+      taskId: "A", delegatedTaskId: "native-A", childThreadId: "child-A",
+    });
+    assert.equal(findPendingNativeAssignment(tasks, delegations, "unknown-child"), null);
+    assert.equal(findPendingNativeAssignment(
+      [{ ...tasks[0]!, boundThreadId: "child-A" }],
+      delegations,
+      "child-A",
+    ), null);
+    assert.equal(findPendingNativeAssignment(
+      [{ id: "B", boundTaskId: "native-B", boundThreadId: null }],
+      delegations,
+      "child-A",
+    ), null);
+  });
+
   it.effect("retries an idempotent worker mutation until the parent binds its delegation", () =>
     Effect.gen(function* () {
       let attempts = 0;
