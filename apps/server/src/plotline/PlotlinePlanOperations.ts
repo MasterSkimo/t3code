@@ -18,7 +18,7 @@ export type PlanMutation =
   | { readonly kind: "create"; readonly rootThreadId: string; readonly actorThreadId: string; readonly input: CreateInput }
   | { readonly kind: "add"; readonly rootThreadId: string; readonly actorThreadId: string; readonly input: AddInput }
   | { readonly kind: "update"; readonly rootThreadId: string; readonly actorThreadId: string; readonly input: UpdateInput }
-  | { readonly kind: "bind"; readonly rootThreadId: string; readonly actorThreadId: string; readonly input: BindInput & { readonly childThreadId: string | null } };
+  | { readonly kind: "bind"; readonly rootThreadId: string; readonly actorThreadId: string; readonly previousDelegationTerminal?: boolean; readonly input: BindInput & { readonly childThreadId: string | null } };
 
 const codec = Schema.fromJsonString(PlotlinePlan);
 const decode = Schema.decodeUnknownSync(codec);
@@ -112,9 +112,24 @@ export const evolvePlan = (current: Plan | null, mutation: PlanMutation, now: st
         throw Error("Workers may bind only subtasks they created.");
       if (tasks.some((other) => other.id !== task.id && other.boundTaskId === input.delegatedTaskId))
         throw Error("Native delegation is already bound to another plan task.");
-      if (task.boundTaskId !== null && task.boundTaskId !== input.delegatedTaskId)
-        throw Error("Native delegation binding cannot be replaced.");
-      tasks[i] = { ...task, boundTaskId: input.delegatedTaskId, boundThreadId: input.childThreadId };
+      // A retry is a new execution attempt of the same planned task, not a
+      // separate task. The native parent must confirm the previous attempt
+      // finished before this binding is replaced.
+      const replacement = task.boundTaskId !== null && task.boundTaskId !== input.delegatedTaskId;
+      if (replacement && !mutation.previousDelegationTerminal)
+        throw Error("Previous native delegation must be terminal before retry.");
+      const bindingHistory = replacement
+        ? [
+            ...(task.bindingHistory ?? []),
+            { delegatedTaskId: task.boundTaskId!, childThreadId: task.boundThreadId },
+          ]
+        : (task.bindingHistory ?? []);
+      tasks[i] = {
+        ...task,
+        boundTaskId: input.delegatedTaskId,
+        boundThreadId: input.childThreadId,
+        bindingHistory,
+      };
     }
   }
   const plan: Plan = { ...current, tasks, revision: current.revision + 1, updatedAt: now };
