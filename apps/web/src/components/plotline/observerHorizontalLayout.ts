@@ -22,7 +22,6 @@ export function layoutHorizontalGraph(
   const STEP_X = OBSERVER_NODE_WIDTH + COLUMN_GAP;
   const STEP_Y = OBSERVER_NODE_HEIGHT + ROW_GAP;
   const byId = new Map(nodes.map((node) => [node.id, node]));
-  const indexById = new Map(nodes.map((node, index) => [node.id, index]));
   const prereqs = new Map<string, string[]>();
   for (const edge of dependencies) {
     if (!byId.has(edge.to) || !byId.has(edge.from)) continue;
@@ -64,6 +63,9 @@ export function layoutHorizontalGraph(
       const chain = new Set([...ancestors, parentId]);
       for (const child of children.get(parentId) ?? []) {
         if (placed.has(child.id)) continue;
+        // A discovered subtask may have prerequisites outside its branch.
+        // Defer it rather than displaying it before its real dependency.
+        if ((prereqs.get(child.id) ?? []).some((id) => !placed.has(id))) continue;
         put(child.id, nextColumn++, row);
         visit(child.id, chain);
       }
@@ -77,6 +79,7 @@ export function layoutHorizontalGraph(
   const downstream = nodes.filter((node) => node.id !== run.id && !placed.has(node.id));
   const phaseStart = branchEnd + 1;
   let pending = [...downstream];
+  const latestChildColumn = new Map<string, number>();
   let safety = nodes.length + 1;
   while (pending.length > 0 && safety-- > 0) {
     let progressed = false;
@@ -90,8 +93,14 @@ export function layoutHorizontalGraph(
         remaining.push(node);
         continue;
       }
+      // A parent may create several child tasks. Display them side by side
+      // along its row rather than spilling those siblings into new rows.
+      const siblingColumn = node.parentId
+        ? (latestChildColumn.get(node.parentId) ?? (columns.get(node.parentId) ?? 0)) + 1
+        : 0;
       const col = Math.max(
         phaseStart,
+        siblingColumn,
         ...incoming.map((id) => (columns.get(id) ?? 0) + 1),
       );
       const parentRow = node.parentId ? rows.get(node.parentId) : undefined;
@@ -103,6 +112,8 @@ export function layoutHorizontalGraph(
         ? Math.round(incomingRows.reduce((a, b) => a + b, 0) / incomingRows.length)
         : Math.floor((orderedBranches.length - 1) / 2));
       put(node.id, col, Math.max(0, row));
+      if (node.parentId !== null && node.parentId !== run.id)
+        latestChildColumn.set(node.parentId, col);
       progressed = true;
     }
     if (!progressed) {
