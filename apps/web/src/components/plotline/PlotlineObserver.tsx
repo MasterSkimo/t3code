@@ -2,13 +2,14 @@ import type { OrchestrationV2ThreadProjection, ScopedThreadRef } from "@t3tools/
 import { plotlineEnvironment } from "../../state/plotline";
 import { useEnvironmentQuery } from "../../state/query";
 import { CheckCircle2, Circle, GitFork, LoaderCircle, XCircle } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import {
   layoutExecutionGraph,
   OBSERVER_NODE_HEIGHT,
   OBSERVER_NODE_WIDTH,
   projectExecutionGraph,
+  projectDynamicPlan,
   type ObservedTask,
 } from "./observerModel";
 
@@ -20,6 +21,10 @@ function statusStyle(status: string): string {
   switch (status) {
     case "completed":
       return "text-emerald-600 dark:text-emerald-400";
+    case "skipped":
+      return "text-muted-foreground";
+    case "cancelled":
+      return "text-amber-600 dark:text-amber-400";
     case "running":
       return "text-sky-600 dark:text-sky-400";
     case "failed":
@@ -58,7 +63,7 @@ function ObservedNodeCard({
     >
       <div className="flex w-full min-w-0 items-center justify-between gap-2">
         <span className="truncate text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-          {node.kind === "run" ? "Conversation" : "Subagent"}
+          {node.kind === "run" ? "Conversation" : node.kind === "plan" ? "Planned task" : "Subagent"}
         </span>
         <span className="flex items-center gap-1 text-[10px]">
           <StatusIcon status={node.status} />
@@ -84,10 +89,24 @@ export function PlotlineObserver({
     environmentId: threadRef.environmentId,
     input: { threadId: String(threadRef.threadId) },
   }));
+  const planQuery = useEnvironmentQuery(plotlineEnvironment.plan({
+    environmentId: threadRef.environmentId,
+    input: { rootThreadId: String(threadRef.threadId) },
+  }));
+  const plan = selectedRunId === "live" ? planQuery.data?.plan ?? null : null;
+  useEffect(() => {
+    // Refresh only the observed plan, never T3's orchestration.
+    const timer = setInterval(() => planQuery.refresh(), 2500);
+    return () => clearInterval(timer);
+  }, [planQuery.refresh, threadRef.threadId]);
   const history = saved.data?.dags ?? [];
   const stored = history.find((dag) => dag.runId === selectedRunId);
-  const nodes = stored?.nodes ?? projectExecutionGraph(projection);
-  const graph = layoutExecutionGraph(nodes);
+  const live = plan
+    ? projectDynamicPlan(plan, projection)
+    : { nodes: projectExecutionGraph(projection), dependencies: [] };
+  const nodes = stored?.nodes ?? live.nodes;
+  const dependencyEdges = stored ? [] : live.dependencies;
+  const graph = layoutExecutionGraph(nodes, dependencyEdges);
   const coordinates = new Map(graph.positions.map((item) => [item.node.id, item]));
   const selected = nodes.find((node) => node.id === selectedId) ?? null;
   const running = nodes.filter((node) => ["running", "waiting"].includes(node.status)).length;
@@ -133,6 +152,12 @@ export function PlotlineObserver({
           </div>
         </div>
         {saved.error ? <p role="status" className="mt-2 text-xs text-rose-600">{saved.error}</p> : null}
+        {planQuery.error ? <p role="status" className="mt-2 text-xs text-rose-600">{planQuery.error}</p> : null}
+        {plan ? (
+          <p className="mt-2 text-[11px] text-muted-foreground">
+            Plan revision {plan.revision} · {plan.tasks.length} tasks · dependencies shown as dashed lines
+          </p>
+        ) : null}
         {nodes.length > 0 ? (
           <div className="mt-3 flex flex-wrap gap-3 text-[11px] text-muted-foreground">
             <span>{nodes.length - 1} delegated</span>
@@ -162,7 +187,9 @@ export function PlotlineObserver({
                 height={graph.height}
                 viewBox={`0 0 ${graph.width} ${graph.height}`}
               >
-                {graph.edges.map((edge) => {
+                {[...graph.edges.map((edge) => ({ ...edge, relation: "parent" as const })),
+                  ...dependencyEdges.map((edge) => ({ ...edge, relation: "dependency" as const }))]
+                  .map((edge) => {
                   const from = coordinates.get(edge.from);
                   const to = coordinates.get(edge.to);
                   if (!from || !to) return null;
@@ -178,6 +205,8 @@ export function PlotlineObserver({
                       fill="none"
                       stroke="currentColor"
                       strokeWidth={1.5}
+                      strokeDasharray={edge.relation === "dependency" ? "5 5" : undefined}
+                      opacity={edge.relation === "dependency" ? 0.65 : 1}
                     />
                   );
                 })}
@@ -210,7 +239,7 @@ export function PlotlineObserver({
               </div>
             ) : (
               <p className="text-xs text-muted-foreground">
-                Select a node to inspect its recorded result. Lines represent delegation, not task dependencies.
+                Select a node to inspect it. Solid lines indicate ownership; dashed lines indicate plan dependencies.
               </p>
             )}
           </footer>
