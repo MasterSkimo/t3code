@@ -49,7 +49,7 @@ export function projectDynamicPlan(
       String(task.id),
       {
         id: String(task.id),
-        parentId: null,
+        parentId: String(task.parentNodeId),
         title: task.title?.trim() || task.prompt.trim().slice(0, 90) || "Delegated task",
         kind: "delegation" as const,
         status: task.status,
@@ -81,7 +81,8 @@ export function projectDynamicPlan(
     .filter((node) => !byNativeId.has(node.id))
     .map((node) => ({
       ...node,
-      parentId: node.parentId === null ? root.id : (byNativeId.get(node.parentId) ?? root.id),
+      parentId: node.parentId === null ? root.id :
+        (byNativeId.get(node.parentId) ?? (native.has(node.parentId) ? node.parentId : root.id)),
     }));
   const dependencies = plan.tasks.flatMap((task) =>
     task.dependsOn.map((id) => ({ from: taskKey(id), to: taskKey(task.id) })),
