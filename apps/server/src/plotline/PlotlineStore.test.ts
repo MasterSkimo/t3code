@@ -14,7 +14,7 @@ describe("Plotline extension persistence", () => {
       const versions = yield* sql<{ readonly version: number }>`
         SELECT version FROM fork_schema_migrations ORDER BY version
       `;
-      assert.deepStrictEqual(versions.map((row) => row.version), [1]);
+      assert.deepStrictEqual(versions.map((row) => row.version), [1, 2]);
       const tables = yield* sql<{ readonly name: string }>`
         SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'effect_sql_migrations'
       `;
