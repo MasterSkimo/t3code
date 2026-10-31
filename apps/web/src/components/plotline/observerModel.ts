@@ -394,7 +394,9 @@ export function layoutExecutionGraph(
     }
     graphWidth = phaseX + phaseColumns * OBSERVER_NODE_WIDTH +
       (phaseColumns - 1) * HORIZONTAL_GAP + PADDING;
-    graphHeight = Math.max(graphHeight, ...positions.map((item) =>
+    // Recompute the canvas bounds after horizontal compaction; retaining the
+    // former stacked layout height would leave a large empty area below it.
+    graphHeight = Math.max(...positions.map((item) =>
       item.y + OBSERVER_NODE_HEIGHT + PADDING,
     ));
   }
