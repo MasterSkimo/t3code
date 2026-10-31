@@ -76,21 +76,20 @@ plan evolves independently of T3's run execution and native delegation metadata.
 T3 work. Execution state and model information come from native T3 subagent records, including
 older runs in the same conversation. Unbound native delegations remain visible.
 
-Solid connectors show parent/child hierarchy. Purple, indented `Sub Task` cards represent
-nested work; blue `Task` cards represent root-level plan work. Dashed side-routed
-arrows represent only explicit `dependsOn` prerequisites. For A with child A1
-and a separate B depending on A, B is drawn below A1 for readability, but
-there is **no A1 -> B dependency**: layout-only spacing edges are never emitted.
+Plotline now uses a **left-to-right DAG**. The conversation sits in the first
+column; independent workstreams occupy distinct horizontal rows. Each task's
+discovered subtasks extend the **same row** to the right, expanding its branch.
+Integration, synthesis and verification are placed in later columns according
+to explicit prerequisites. This layout never turns visual adjacency into an
+A1 -> B dependency.
 
-The live view preserves stable columns for parallel workstreams. Both the
-live observer and PNG export use the same orthogonal edge router: links cross
-row gaps and column gutters instead of task cards. Selecting a task highlights
-its incident links and dims unrelated connectors. For multi-branch plans, the
-dependent integration/review phases occupy additional horizontal lanes to
-reduce tall single-column tails. Hold the left mouse button and drag anywhere
-inside the graph to pan horizontally or vertically; short clicks still select
-cards, and touch devices retain native scrolling. Scrollbars and keyboard
-navigation remain available. The export always includes the complete graph.
+The right-panel Plotline tab includes a **Bottom** action. It opens Plotline
+inside a fork-owned tab of the existing bottom drawer; the native **Terminal**
+tab remains available without replacing terminal sessions. Resize the bottom
+panel by dragging its top edge. Both placements support mouse drag-to-pan,
+scrolling, node selection and PNG export. They share the same model, layout
+and connector routing, so the PNG always includes the full horizontal graph.
+
 Invalid dependencies, duplicate IDs, cycles and unrelated worker edits are
 rejected. The plan remains visible before any delegation, including tasks
 marked completed, skipped or cancelled.
