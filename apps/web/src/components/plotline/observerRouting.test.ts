@@ -55,12 +55,14 @@ describe("Plotline live and PNG routing", () => {
     const graph = layoutExecutionGraph(nodes, dependencies);
     const byId = new Map(graph.positions.map((entry) => [entry.node.id, entry]));
     for (const [parent, child] of [["A", "A1"], ["B", "B1"], ["C", "C1"], ["A1", "A2"], ["B1", "B2"], ["C1", "C2"]]) {
-      expect(byId.get(parent)?.x).toBe(byId.get(child)?.x);
+      expect(byId.get(parent)?.y).toBe(byId.get(child)?.y);
+      expect(byId.get(child)!.x).toBeGreaterThan(byId.get(parent)!.x);
     }
-    const roots = ["A", "B", "C"].map((id) => byId.get(id)!.x);
-    expect(roots[0]).toBeLessThan(roots[1]!);
-    expect(roots[1]).toBeLessThan(roots[2]!);
-    expect(roots[1]! - roots[0]!).toBeGreaterThan(OBSERVER_NODE_WIDTH + 70);
+    const roots = ["A", "B", "C"].map((id) => byId.get(id)!);
+    expect(roots[0]!.x).toBe(roots[1]!.x);
+    expect(roots[1]!.x).toBe(roots[2]!.x);
+    expect(roots[0]!.y).toBeLessThan(roots[1]!.y);
+    expect(roots[1]!.y).toBeLessThan(roots[2]!.y);
     const routes = routePlotlineEdges(graph.positions, graph.edges, dependencies);
     for (const route of routes) {
       expect(routeCrossesCards(route.points, graph.positions, route.from, route.to)).toBe(false);
@@ -106,12 +108,31 @@ describe("Plotline live and PNG routing", () => {
     expect(graph.width).toBeGreaterThan(1_800);
     // The last six stages should occupy multiple columns, not six stacked rows.
     expect(new Set(stageRoots.map((position) => position.y)).size).toBeLessThan(6);
-    expect(byId.get("verification-1")?.x).toBe(byId.get("verification")?.x);
+    expect(byId.get("verification-1")?.y).toBe(byId.get("verification")?.y);
+    expect(byId.get("verification-1")!.x).toBeGreaterThan(byId.get("verification")!.x);
     const occupied = new Set(graph.positions.map((position) => `${position.x}:${position.y}`));
     expect(occupied.size).toBe(graph.positions.length);
     // Horizontal placement only: the export and live view retain original links.
     expect(graph.edges).toContainEqual({ from: "resolution", to: "resolution-1" });
     expect(dependencies).not.toContainEqual({ from: "resolution-1", to: "verification" });
+  });
+
+  it("places sibling subtasks on the same workstream row, extending its width", () => {
+    const nodes = [
+      node("root", null), node("A", "root"),
+      node("A1", "A", true), node("A2", "A", true), node("A3", "A", true),
+      node("B", "root"),
+    ];
+    const dependencies = [{ from: "A", to: "B" }];
+    const graph = layoutExecutionGraph(nodes, dependencies);
+    const byId = new Map(graph.positions.map((item) => [item.node.id, item]));
+    const chain = ["A", "A1", "A2", "A3"].map((id) => byId.get(id)!);
+    expect(new Set(chain.map((item) => item.y)).size).toBe(1);
+    expect(chain.map((item) => item.y)).toEqual([chain[0]!.y, chain[0]!.y, chain[0]!.y, chain[0]!.y]);
+    for (let index = 1; index < chain.length; index++) {
+      expect(chain[index]!.x).toBeGreaterThan(chain[index - 1]!.x);
+    }
+    expect(byId.get("B")!.x).toBeGreaterThan(byId.get("A3")!.x);
   });
 
   it("does not connect unrelated cards through a large vertical gap", () => {
@@ -125,7 +146,7 @@ describe("Plotline live and PNG routing", () => {
     for (const route of routes) {
       expect(routeCrossesCards(route.points, graph.positions, route.from, route.to)).toBe(false);
     }
-    expect(graph.height).toBeGreaterThan(3 * OBSERVER_NODE_HEIGHT);
+    expect(graph.width).toBeGreaterThan(3 * OBSERVER_NODE_WIDTH);
   });
 
   it("does not infer a dependency from the physical ordering of nodes", () => {
