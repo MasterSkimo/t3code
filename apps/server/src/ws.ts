@@ -1872,6 +1872,11 @@ export const layerWsRpc = (
       });
 
       const handlers = ServerWsRpcGroup.of({
+        [WS_METHODS.plotlinePlanGet]: (input) =>
+          Option.match(plotlineStore, {
+            onNone: () => Effect.fail(unavailablePlotline),
+            onSome: (store) => store.getPlan(input.rootThreadId).pipe(Effect.map((plan) => ({ plan }))),
+          }),
         [WS_METHODS.plotlineList]: (input) =>
           Option.match(plotlineStore, {
             onNone: () => Effect.fail(unavailablePlotline),
