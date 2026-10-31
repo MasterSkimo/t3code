@@ -81,6 +81,13 @@ nested work; blue `Task` cards represent root-level plan work. Dashed side-route
 arrows represent only explicit `dependsOn` prerequisites. For A with child A1
 and a separate B depending on A, B is drawn below A1 for readability, but
 there is **no A1 -> B dependency**: layout-only spacing edges are never emitted.
+
+The live view preserves stable columns for parallel workstreams. Both the
+live observer and PNG export use the same orthogonal edge router: links cross
+row gaps and column gutters instead of task cards. Selecting a task highlights
+its incident links and dims unrelated connectors. Horizontal scrolling remains
+available when a DAG exceeds the right-panel width; the export always includes
+the complete graph.
 Invalid dependencies, duplicate IDs, cycles and unrelated worker edits are
 rejected. The plan remains visible before any delegation, including tasks
 marked completed, skipped or cancelled.
