@@ -1,8 +1,8 @@
 import type { OrchestrationV2ThreadProjection, ScopedThreadRef } from "@t3tools/contracts";
 import { plotlineEnvironment } from "../../state/plotline";
 import { useEnvironmentQuery } from "../../state/query";
-import { CheckCircle2, Circle, CornerDownRight, GitFork, LoaderCircle, XCircle } from "lucide-react";
-import { useEffect, useState } from "react";
+import { CheckCircle2, Circle, CornerDownRight, Download, GitFork, LoaderCircle, XCircle } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   layoutExecutionGraph,
@@ -13,6 +13,7 @@ import {
   summarizePlanProgress,
   type ObservedTask,
 } from "./observerModel";
+import { downloadPlotlinePng, isDarkPlotlineSurface } from "./plotlinePng";
 
 /**
  * Read-only execution observer. T3 owns all delegation, scheduling, completion,
@@ -90,6 +91,9 @@ export function PlotlineObserver({
   readonly projection: OrchestrationV2ThreadProjection | null;
   readonly threadRef: ScopedThreadRef;
 }) {
+  const surfaceRef = useRef<HTMLElement | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedRunId, setSelectedRunId] = useState("live");
   const saved = useEnvironmentQuery(plotlineEnvironment.list({
@@ -125,8 +129,30 @@ export function PlotlineObserver({
     ? (projection?.subagents.length ?? 0)
     : Math.max(0, nodes.length - 1);
 
+  const exportPng = async () => {
+    if (exporting || graph.positions.length === 0) return;
+    setExporting(true);
+    setExportError(null);
+    try {
+      // Model positions cover the entire DAG, including nodes outside the scroll viewport.
+      await downloadPlotlinePng({
+        title: plan?.title ?? stored?.title ?? projection?.thread.title ?? "Plotline DAG",
+        nodes: graph.positions,
+        edges: graph.edges,
+        dependencies: dependencyEdges,
+        width: graph.width,
+        height: graph.height,
+        dark: isDarkPlotlineSurface(surfaceRef.current),
+      });
+    } catch (error) {
+      setExportError(error instanceof Error ? error.message : "Unable to export Plotline PNG.");
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return (
-    <section className="flex h-full min-h-0 flex-col bg-background text-foreground" aria-label="Plotline execution observer">
+    <section ref={surfaceRef} className="flex h-full min-h-0 flex-col bg-background text-foreground" aria-label="Plotline execution observer">
       <header className="shrink-0 border-b border-border px-4 py-3">
         <div className="flex items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-2">
@@ -137,6 +163,17 @@ export function PlotlineObserver({
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={() => { void exportPng(); }}
+              disabled={exporting || graph.positions.length === 0}
+              aria-label="Export Plotline DAG as PNG image"
+              title="Export complete DAG as PNG (including off-screen nodes)"
+              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2 py-1 text-[11px] hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Download className="size-3.5" aria-hidden="true" />
+              {exporting ? "Exporting…" : "Export PNG"}
+            </button>
             <select
               aria-label="Plotline run history"
               value={selectedRunId}
@@ -163,6 +200,7 @@ export function PlotlineObserver({
             </button>
           </div>
         </div>
+        {exportError ? <p role="alert" className="mt-2 text-xs text-rose-600">{exportError}</p> : null}
         {saved.error ? <p role="status" className="mt-2 text-xs text-rose-600">{saved.error}</p> : null}
         {planQuery.error ? <p role="status" className="mt-2 text-xs text-rose-600">{planQuery.error}</p> : null}
         {plan ? (
