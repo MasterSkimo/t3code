@@ -65,7 +65,7 @@ function ObservedNodeCard({
       type="button"
       onClick={onSelect}
       aria-pressed={selected}
-      className={`mx-auto flex h-full flex-col gap-2 overflow-hidden rounded-xl border p-3 text-left shadow-sm transition-colors hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary ${typeStyle} ${selected ? "ring-2 ring-primary" : ""} ${isSubtask ? "" : "w-full"}`}
+      className={`mx-auto flex h-full flex-col gap-2 overflow-hidden border p-3 text-left shadow-sm transition-colors hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary ${typeStyle} ${selected ? "ring-2 ring-primary" : ""} ${isSubtask ? "rounded-lg" : "w-full rounded-xl"}`}
     >
       <div className="flex w-full min-w-0 items-center justify-between gap-2">
         <span className={`flex min-w-0 items-center gap-1 truncate text-[10px] font-semibold uppercase tracking-wider ${isSubtask ? "text-violet-600 dark:text-violet-300" : "text-muted-foreground"}`}>
@@ -214,6 +214,11 @@ export function PlotlineObserver({
                 height={graph.height}
                 viewBox={`0 0 ${graph.width} ${graph.height}`}
               >
+                <defs>
+                  <marker id="plotline-dependency-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto" markerUnits="userSpaceOnUse">
+                    <path d="M 0 0 L 6 3.5 L 0 7" fill="none" stroke="currentColor" strokeWidth="1.25" />
+                  </marker>
+                </defs>
                 {/* Hierarchy edges are solid and are never inferred from plan dependencies. */}
                 {graph.edges.map((edge) => {
                   const from = coordinates.get(edge.from);
@@ -256,6 +261,7 @@ export function PlotlineObserver({
                       stroke="currentColor"
                       strokeWidth={1.5}
                       strokeDasharray="5 5"
+                      markerEnd="url(#plotline-dependency-arrow)"
                       opacity={0.75}
                     />
                   );
