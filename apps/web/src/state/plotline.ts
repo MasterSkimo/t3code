@@ -8,6 +8,11 @@ import { connectionAtomRuntime } from "../connection/runtime";
 
 /** Typed RPCs use T3's existing authenticated environment connection. */
 export const plotlineEnvironment = {
+  plan: createEnvironmentRpcQueryAtomFamily(connectionAtomRuntime, {
+    label: "plotline:dynamic-plan",
+    tag: WS_METHODS.plotlinePlanGet,
+    staleTimeMs: 0,
+  }),
   list: createEnvironmentRpcQueryAtomFamily(connectionAtomRuntime, {
     label: "plotline:dag-list",
     tag: WS_METHODS.plotlineList,
