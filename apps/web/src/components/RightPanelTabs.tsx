@@ -32,6 +32,7 @@ import {
   ChevronRight,
   FileDiff,
   Files,
+  GitFork,
   Globe2,
   Plus,
   TerminalSquare,
@@ -130,6 +131,8 @@ export interface RightPanelTabsProps {
   onAddPullRequest: () => void;
   onAddPullRequests: () => void;
   onAddDevice: () => void;
+  onAddPlotline: () => void;
+  plotlineAvailable: boolean;
   browserAvailable: boolean;
   terminalAvailable: boolean;
   diffAvailable: boolean;
@@ -304,6 +307,8 @@ function RightPanelEmptyState(props: {
   onAddPullRequest: () => void;
   onAddPullRequests: () => void;
   onAddDevice: () => void;
+  onAddPlotline: () => void;
+  plotlineAvailable: boolean;
   browserAvailable: boolean;
   terminalAvailable: boolean;
   diffAvailable: boolean;
@@ -322,6 +327,14 @@ function RightPanelEmptyState(props: {
       available: props.browserAvailable,
       disabledReason: SURFACE_UNAVAILABLE_HINTS.browser,
       onClick: props.onAddBrowser,
+    },
+    {
+      label: "Plotline",
+      icon: GitFork,
+      shortcut: "G",
+      available: props.plotlineAvailable,
+      disabledReason: "Open a T3 conversation to inspect its execution.",
+      onClick: props.onAddPlotline,
     },
     {
       label: "Terminal",
@@ -538,6 +551,8 @@ function surfaceTitle(
   terminalLabelsById: ReadonlyMap<string, string>,
 ): string {
   switch (surface.kind) {
+    case "plotline":
+      return "Plotline";
     case "diff":
       return "Diff";
     case "files":
@@ -618,6 +633,8 @@ function SurfaceIcon({
   pullRequestStatusSeed: PullRequestTabStatusSeed | undefined;
 }) {
   switch (surface.kind) {
+    case "plotline":
+      return <GitFork className="size-3 shrink-0" />;
     case "preview":
       return <PreviewFavicon capturedUrl={previewCapturedUrl} url={previewUrl} />;
     case "diff":
@@ -1017,6 +1034,14 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
       available: props.browserAvailable,
       disabledReason: SURFACE_DISABLED_REASONS.browser,
       onClick: props.onAddBrowser,
+    },
+    {
+      label: "Plotline",
+      icon: GitFork,
+      shortcut: "G",
+      available: props.plotlineAvailable,
+      disabledReason: "Open a T3 conversation to inspect its execution.",
+      onClick: props.onAddPlotline,
     },
     {
       label: "Terminal",
@@ -1440,6 +1465,8 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             onAddPullRequest={props.onAddPullRequest}
             onAddPullRequests={props.onAddPullRequests}
             onAddDevice={props.onAddDevice}
+            onAddPlotline={props.onAddPlotline}
+            plotlineAvailable={props.plotlineAvailable}
             browserAvailable={props.browserAvailable}
             terminalAvailable={props.terminalAvailable}
             diffAvailable={props.diffAvailable}
