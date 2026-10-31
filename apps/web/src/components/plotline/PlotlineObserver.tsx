@@ -189,8 +189,8 @@ export function PlotlineObserver({
           <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[10px] text-muted-foreground" aria-label="Plotline graph legend">
             <span className="inline-flex items-center gap-1.5"><span className="size-2.5 rounded-[3px] border border-sky-500 bg-sky-500/15" />Task</span>
             <span className="inline-flex items-center gap-1.5"><span className="size-2.5 rounded-[3px] border border-violet-500 bg-violet-500/15" />Sub Task</span>
-            <span className="inline-flex items-center gap-1.5"><span className="w-5 border-t border-current" />Parent / child</span>
-            <span className="inline-flex items-center gap-1.5"><span className="w-5 border-t border-dashed border-current" />Dependency</span>
+            <span className="inline-flex items-center gap-1.5"><span className="w-6 border-t-[2.5px] border-slate-500 dark:border-slate-300" />Parent / child</span>
+            <span className="inline-flex items-center gap-1.5"><span className="w-6 border-t-[2.5px] border-dashed border-sky-600 dark:border-sky-300" />Dependency</span>
           </div>
         ) : null}
       </header>
@@ -209,14 +209,37 @@ export function PlotlineObserver({
             <div className="relative mx-auto" style={{ width: graph.width, height: graph.height }}>
               <svg
                 aria-hidden="true"
-                className="pointer-events-none absolute inset-0 text-border"
+                className="pointer-events-none absolute inset-0"
                 width={graph.width}
                 height={graph.height}
                 viewBox={`0 0 ${graph.width} ${graph.height}`}
               >
                 <defs>
-                  <marker id="plotline-dependency-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto" markerUnits="userSpaceOnUse">
-                    <path d="M 0 0 L 6 3.5 L 0 7" fill="none" stroke="currentColor" strokeWidth="1.25" />
+                  {/* Glow sits behind the sharp line to keep long connections legible on dark backgrounds. */}
+                  <filter id="plotline-edge-glow" x="-50%" y="-50%" width="200%" height="200%">
+                    <feGaussianBlur stdDeviation="1.8" result="blur" />
+                    <feMerge>
+                      <feMergeNode in="blur" />
+                      <feMergeNode in="SourceGraphic" />
+                    </feMerge>
+                  </filter>
+                  <marker
+                    id="plotline-dependency-arrow"
+                    markerWidth="9"
+                    markerHeight="9"
+                    refX="7"
+                    refY="4.5"
+                    orient="auto"
+                    markerUnits="userSpaceOnUse"
+                  >
+                    <path
+                      d="M 0 0 L 7 4.5 L 0 9"
+                      fill="none"
+                      stroke="#38bdf8"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
                   </marker>
                 </defs>
                 {/* Hierarchy edges are solid and are never inferred from plan dependencies. */}
@@ -230,13 +253,19 @@ export function PlotlineObserver({
                   const endY = to.y;
                   const middleY = startY + (endY - startY) / 2;
                   return (
-                    <path
-                      key={`hierarchy:${edge.from}:${edge.to}`}
-                      d={`M ${startX} ${startY} V ${middleY} H ${endX} V ${endY}`}
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth={1.5}
-                    />
+                    <g key={`hierarchy:${edge.from}:${edge.to}`} className="text-slate-500 dark:text-slate-300">
+                      <path
+                        d={`M ${startX} ${startY} V ${middleY} H ${endX} V ${endY}`}
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth={2.5}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        filter="url(#plotline-edge-glow)"
+                      />
+                      <circle cx={startX} cy={startY} r={3} fill="currentColor" />
+                      <circle cx={endX} cy={endY} r={3} fill="currentColor" />
+                    </g>
                   );
                 })}
                 {/* Dependencies leave the side of the card and use a separate dashed lane.
@@ -248,22 +277,27 @@ export function PlotlineObserver({
                   const right = to.x >= from.x;
                   const startX = from.x + (right ? OBSERVER_NODE_WIDTH : 0);
                   const endX = to.x + (right ? OBSERVER_NODE_WIDTH : 0);
+                  // Preserve the separate side lane: A -> B never routes through subtask A1.
                   const laneX = right
-                    ? Math.max(startX, endX) + 16 + (index % 3) * 6
-                    : Math.min(startX, endX) - 16 - (index % 3) * 6;
+                    ? Math.max(startX, endX) + 17 + (index % 3) * 5
+                    : Math.min(startX, endX) - 17 - (index % 3) * 5;
                   const startY = from.y + OBSERVER_NODE_HEIGHT / 2;
                   const endY = to.y + OBSERVER_NODE_HEIGHT / 2;
                   return (
-                    <path
-                      key={`dependency:${edge.from}:${edge.to}`}
-                      d={`M ${startX} ${startY} H ${laneX} V ${endY} H ${endX}`}
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth={1.5}
-                      strokeDasharray="5 5"
-                      markerEnd="url(#plotline-dependency-arrow)"
-                      opacity={0.75}
-                    />
+                    <g key={`dependency:${edge.from}:${edge.to}`} className="text-sky-600 dark:text-sky-300">
+                      <path
+                        d={`M ${startX} ${startY} H ${laneX} V ${endY} H ${endX}`}
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth={2.3}
+                        strokeDasharray="7 5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        markerEnd="url(#plotline-dependency-arrow)"
+                        filter="url(#plotline-edge-glow)"
+                      />
+                      <circle cx={startX} cy={startY} r={3.5} fill="currentColor" />
+                    </g>
                   );
                 })}
               </svg>
