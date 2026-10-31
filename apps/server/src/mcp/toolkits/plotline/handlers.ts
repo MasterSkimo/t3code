@@ -1,5 +1,4 @@
 import {
-  type ThreadId,
   ThreadId as ThreadIdSchema,
   PlotlineStorageError,
 } from "@t3tools/contracts";
