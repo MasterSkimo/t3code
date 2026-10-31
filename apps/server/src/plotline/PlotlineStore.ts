@@ -103,7 +103,7 @@ export const layer = Layer.effect(PlotlineStore, make).pipe(
  * migrations fail, expose a failing extension service and preserve native runs.
  */
 export const optionalLayer = layer.pipe(
-  Layer.catchAllCause(() =>
+  Layer.catchCause(() =>
     Layer.effect(
       PlotlineStore,
       Effect.logWarning("Fork Plotline storage unavailable; native T3 remains active.").pipe(
