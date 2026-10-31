@@ -108,6 +108,36 @@ describe("dynamic Plotline planning", () => {
     }).pipe(Effect.provide(Store.layerMemory)),
   );
 
+  it("persists successive native attempts and replays the same request without duplicates", () =>
+    Effect.gen(function* () {
+      const store = yield* Store.PlotlineStore;
+      yield* store.mutatePlan(create);
+      const first = {
+        kind: "bind" as const, rootThreadId: root, actorThreadId: root,
+        input: { requestId: "native-A", taskId: "A", delegatedTaskId: "node-A", childThreadId: "child-A" },
+      };
+      const retry = {
+        kind: "bind" as const, rootThreadId: root, actorThreadId: root,
+        previousDelegationTerminal: true,
+        input: { requestId: "retry-native-A", taskId: "A", delegatedTaskId: "node-A2", childThreadId: "child-A2" },
+      };
+      yield* store.mutatePlan(first);
+      const second = yield* store.mutatePlan(retry);
+      assert.equal(second.revision, 3);
+      const replay = yield* store.mutatePlan({ ...retry, previousDelegationTerminal: false });
+      assert.equal(replay.updated, false);
+      const stored = yield* store.getPlan(root);
+      assert.equal(stored?.tasks[0]?.boundTaskId, "node-A2");
+      assert.deepStrictEqual(stored?.tasks[0]?.bindingHistory, [
+        { delegatedTaskId: "node-A", childThreadId: "child-A" },
+      ]);
+      assert.throws(() => evolvePlan(stored!, {
+        kind: "bind", rootThreadId: root, actorThreadId: root, previousDelegationTerminal: true,
+        input: { requestId: "reuse-old", taskId: "B", delegatedTaskId: "node-A", childThreadId: "child-A" },
+      }, now), /another plan task/);
+    }).pipe(Effect.provide(Store.layerMemory)),
+  );
+
   it("records simultaneous discoveries without overwriting either task", () =>
     Effect.gen(function* () {
       const store = yield* Store.PlotlineStore;
