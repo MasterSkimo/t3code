@@ -175,27 +175,34 @@ export function layoutExecutionGraph(
     group.push(node);
     groups.set(level, group);
   }
-  const maxColumns = Math.max(1, ...[...groups.values()].map((group) => group.length));
-  const maxLevel = Math.max(...groups.keys());
+  // Bound horizontal growth: a mission with many workers must remain navigable
+  // in T3's right panel rather than creating a single enormous sibling row.
+  const maxColumns = Math.min(4, Math.max(1, ...[...groups.values()].map((group) => group.length)));
   const width = PADDING * 2 + maxColumns * OBSERVER_NODE_WIDTH + (maxColumns - 1) * HORIZONTAL_GAP;
   const positions: ObservedPosition[] = [];
+  let nextY = PADDING;
   for (const [level, group] of [...groups].sort(([a], [b]) => a - b)) {
-    const rowWidth = group.length * OBSERVER_NODE_WIDTH + (group.length - 1) * HORIZONTAL_GAP;
-    const offset = (width - rowWidth) / 2;
-    group.forEach((node, index) =>
-      positions.push({
-        node,
-        x: offset + index * (OBSERVER_NODE_WIDTH + HORIZONTAL_GAP),
-        y: PADDING + level * (OBSERVER_NODE_HEIGHT + VERTICAL_GAP),
-      }),
-    );
+    const rowCount = Math.ceil(group.length / maxColumns);
+    for (let row = 0; row < rowCount; row++) {
+      const chunk = group.slice(row * maxColumns, (row + 1) * maxColumns);
+      const rowWidth = chunk.length * OBSERVER_NODE_WIDTH + (chunk.length - 1) * HORIZONTAL_GAP;
+      const offset = (width - rowWidth) / 2;
+      chunk.forEach((node, column) =>
+        positions.push({
+          node,
+          x: offset + column * (OBSERVER_NODE_WIDTH + HORIZONTAL_GAP),
+          y: nextY + row * (OBSERVER_NODE_HEIGHT + VERTICAL_GAP),
+        }),
+      );
+    }
+    nextY += rowCount * (OBSERVER_NODE_HEIGHT + VERTICAL_GAP);
   }
   const edges = nodes
     .filter((node) => node.parentId !== null && byId.has(node.parentId))
     .map((node) => ({ from: node.parentId!, to: node.id }));
   return {
     width,
-    height: PADDING * 2 + (maxLevel + 1) * OBSERVER_NODE_HEIGHT + maxLevel * VERTICAL_GAP,
+    height: nextY + PADDING,
     positions,
     edges,
   };
