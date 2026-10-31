@@ -38,15 +38,52 @@ const mutate = <I>(kind: "create" | "add" | "update", input: I) =>
   Effect.gen(function* () {
     const context = yield* caller;
     const store = yield* PlotlineStore.PlotlineStore;
-    // A child can call this tool before the parent has received and bound the
-    // native delegation ID. Retry the original idempotent mutation only while
-    // waiting for that binding; never bypass branch ownership checks.
-    return yield* retryPendingTaskBinding(
-      store.mutatePlan({
+    const isWorker = context.actorThreadId !== context.rootThreadId && kind !== "create";
+    const apply = Effect.gen(function* () {
+      if (isWorker) {
+        const plan = yield* store.getPlan(context.rootThreadId);
+        // T3 can expose a delegated-task ID while its childThreadId is still
+        // null. Resolve that identity from the real native parent/child records,
+        // never from agent-provided task or thread IDs.
+        if (plan?.tasks.some((task) => task.boundTaskId !== null && task.boundThreadId === null)) {
+          const shell = yield* context.threads.getThreadShell(ThreadIdSchema.make(context.actorThreadId))
+            .pipe(Effect.mapError(() => failure("Could not inspect native child lineage.")));
+          if (shell?.lineage.relationshipToParent === "subagent" && shell.lineage.parentThreadId) {
+            const parentThreadId = String(shell.lineage.parentThreadId);
+            const native = yield* context.threads.getThreadRecords(
+              ThreadIdSchema.make(parentThreadId), ["subagents"],
+            ).pipe(Effect.mapError(() => failure("Could not inspect native parent delegations.")));
+            const delegation = native.subagents.find(
+              (task) => task.childThreadId !== null &&
+                String(task.childThreadId) === context.actorThreadId,
+            );
+            const assigned = plan.tasks.find(
+              (task) => delegation !== undefined &&
+                task.boundTaskId === String(delegation.id) && task.boundThreadId === null,
+            );
+            if (delegation && assigned)
+              yield* store.mutatePlan({
+                kind: "bind",
+                rootThreadId: context.rootThreadId,
+                actorThreadId: parentThreadId,
+                input: {
+                  requestId: `plotline-child-link:${delegation.id}`,
+                  taskId: assigned.id,
+                  delegatedTaskId: String(delegation.id),
+                  childThreadId: context.actorThreadId,
+                },
+              });
+          }
+        }
+      }
+      return yield* store.mutatePlan({
         kind, rootThreadId: context.rootThreadId, actorThreadId: context.actorThreadId, input,
-      } as Parameters<typeof store.mutatePlan>[0]),
-      context.actorThreadId !== context.rootThreadId && kind !== "create",
-    );
+      } as Parameters<typeof store.mutatePlan>[0]);
+    });
+    // A child can mutate before Terra receives the native delegation ID.
+    // Retry only the temporary missing-assignment error; each attempt checks
+    // the persisted plan and may repair a native child link in its own branch.
+    return yield* retryPendingTaskBinding(apply, isWorker);
   });
 
 const handlers = {
