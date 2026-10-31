@@ -36,6 +36,7 @@ export const assertValidPlan = (plan: Plan): void => {
   for (const task of plan.tasks) {
     if (!task.id.trim() || task.id.length > 128 || !task.title.trim() || task.title.length > 200 ||
         task.detail.length > 4000 || task.dependsOn.length > MAX_TASKS) throw Error("Invalid task metadata.");
+    if ((task.bindingHistory?.length ?? 0) > 100) throw Error("Too many native delegation attempts.");
     if (task.parentTaskId !== null && !tasks.has(task.parentTaskId)) throw Error("Unknown parent task.");
     if (new Set(task.dependsOn).size !== task.dependsOn.length ||
         task.dependsOn.some((id) => !tasks.has(id))) throw Error("Invalid dependencies.");
@@ -110,8 +111,12 @@ export const evolvePlan = (current: Plan | null, mutation: PlanMutation, now: st
     } else {
       if (!isRoot && task.createdByThreadId !== actorThreadId)
         throw Error("Workers may bind only subtasks they created.");
-      if (tasks.some((other) => other.id !== task.id && other.boundTaskId === input.delegatedTaskId))
+      if (tasks.some((other) => other.id !== task.id &&
+        (other.boundTaskId === input.delegatedTaskId ||
+          other.bindingHistory?.some((attempt) => attempt.delegatedTaskId === input.delegatedTaskId))))
         throw Error("Native delegation is already bound to another plan task.");
+      if (task.bindingHistory?.some((attempt) => attempt.delegatedTaskId === input.delegatedTaskId))
+        throw Error("A previous delegation attempt cannot be reused.");
       // A retry is a new execution attempt of the same planned task, not a
       // separate task. The native parent must confirm the previous attempt
       // finished before this binding is replaced.
