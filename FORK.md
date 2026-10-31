@@ -38,7 +38,7 @@ plan evolves independently of T3's run execution and native delegation metadata.
 - `plotline_plan_create`: initial tasks and dependency IDs (root orchestrator only).
 - `plotline_task_add`: append a new task (workers only under an assigned/owned task).
 - `plotline_task_update`: revise details/prerequisites or mark skipped/cancelled with a reason.
-- `plotline_task_bind`: root orchestrator binds the actual T3 delegated `taskId` to its plan node.
+- `plotline_task_bind`: the delegating agent binds the actual T3 delegated `taskId` to its owned plan node.
   The server verifies the native task exists and derives the child thread ID itself.
 - Browser view uses the existing authenticated `plotline.plan.get` RPC and refreshes while open.
 
