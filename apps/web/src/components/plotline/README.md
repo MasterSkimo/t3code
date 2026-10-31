@@ -85,9 +85,12 @@ there is **no A1 -> B dependency**: layout-only spacing edges are never emitted.
 The live view preserves stable columns for parallel workstreams. Both the
 live observer and PNG export use the same orthogonal edge router: links cross
 row gaps and column gutters instead of task cards. Selecting a task highlights
-its incident links and dims unrelated connectors. Horizontal scrolling remains
-available when a DAG exceeds the right-panel width; the export always includes
-the complete graph.
+its incident links and dims unrelated connectors. For multi-branch plans, the
+dependent integration/review phases occupy additional horizontal lanes to
+reduce tall single-column tails. Hold the left mouse button and drag anywhere
+inside the graph to pan horizontally or vertically; short clicks still select
+cards, and touch devices retain native scrolling. Scrollbars and keyboard
+navigation remain available. The export always includes the complete graph.
 Invalid dependencies, duplicate IDs, cycles and unrelated worker edits are
 rejected. The plan remains visible before any delegation, including tasks
 marked completed, skipped or cancelled.
