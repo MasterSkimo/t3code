@@ -9,6 +9,8 @@ export interface ObservedTask {
   readonly parentId: string | null;
   readonly title: string;
   readonly kind: "run" | "delegation" | "plan";
+  /** Plan hierarchy only; native delegates retain their existing appearance. */
+  readonly isSubtask?: boolean;
   readonly status: string;
   readonly provider: string | null;
   readonly detail: string;
@@ -75,6 +77,7 @@ export function projectDynamicPlan(
       parentId: task.parentTaskId === null ? root.id : taskKey(task.parentTaskId),
       title: task.title,
       kind: "plan",
+      isSubtask: task.parentTaskId !== null,
       // An unbound completion is a plan assertion, not a native execution.
       // Bound tasks always display the native T3 delegation status.
       status: execution?.status ?? (task.boundTaskId === null ? task.planState : "planned"),
@@ -177,30 +180,80 @@ export function layoutExecutionGraph(
     return { width: 0, height: 0, positions: [] as readonly ObservedPosition[], edges: [] as readonly { from: string; to: string }[] };
   }
   const byId = new Map(nodes.map((node) => [node.id, node]));
-  const levels = new Map<string, number>();
   const prerequisites = new Map<string, string[]>();
+  const predecessors = new Map<string, Set<string>>();
+  const successors = new Map<string, Set<string>>();
+  const addConstraint = (from: string, to: string) => {
+    if (from === to || !byId.has(from) || !byId.has(to)) return;
+    const into = predecessors.get(to) ?? new Set<string>();
+    into.add(from);
+    predecessors.set(to, into);
+    const out = successors.get(from) ?? new Set<string>();
+    out.add(to);
+    successors.set(from, out);
+  };
+  const children = new Map<string, string[]>();
+  for (const node of nodes) {
+    if (node.parentId === null || !byId.has(node.parentId)) continue;
+    const siblings = children.get(node.parentId) ?? [];
+    siblings.push(node.id);
+    children.set(node.parentId, siblings);
+    addConstraint(node.parentId, node.id);
+  }
   for (const edge of dependencies) {
     if (!byId.has(edge.from) || !byId.has(edge.to)) continue;
     const list = prerequisites.get(edge.to) ?? [];
     list.push(edge.from);
     prerequisites.set(edge.to, list);
+    addConstraint(edge.from, edge.to);
   }
+  const reaches = (from: string, to: string): boolean => {
+    const seen = new Set<string>();
+    const pending = [from];
+    while (pending.length > 0) {
+      const id = pending.pop()!;
+      if (id === to) return true;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      pending.push(...(successors.get(id) ?? []));
+    }
+    return false;
+  };
+  const descendants = (parentId: string): string[] => {
+    const found: string[] = [];
+    const pending = [...(children.get(parentId) ?? [])];
+    const seen = new Set<string>();
+    while (pending.length > 0) {
+      const id = pending.pop()!;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      found.push(id);
+      pending.push(...(children.get(id) ?? []));
+    }
+    return found;
+  };
+  // When B depends on A and A owns A1, place B below A1's subtree.
+  // These are layout-only constraints: they NEVER create A1 -> B dependencies.
+  // Skip a spacing constraint if it would contradict the actual DAG.
+  for (const edge of dependencies) {
+    if (!byId.has(edge.from) || !byId.has(edge.to)) continue;
+    for (const descendant of descendants(edge.from)) {
+      if (!reaches(edge.to, descendant)) addConstraint(descendant, edge.to);
+    }
+  }
+  const levels = new Map<string, number>();
   const depth = (id: string, visiting: Set<string>): number => {
     const known = levels.get(id);
     if (known !== undefined) return known;
-    const node = byId.get(id);
-    if (!node || visiting.has(id)) return 0;
+    if (visiting.has(id)) return 0;
     visiting.add(id);
-    const parents = [
-      ...(node.parentId !== null && byId.has(node.parentId) ? [node.parentId] : []),
-      ...(prerequisites.get(id) ?? []),
-    ];
+    const parents = [...(predecessors.get(id) ?? [])];
     const next = parents.length === 0 ? 0 : Math.max(...parents.map((parent) => depth(parent, visiting) + 1));
     visiting.delete(id);
     levels.set(id, next);
     return next;
   };
-  for (const node of nodes) levels.set(node.id, depth(node.id, new Set()));
+  for (const node of nodes) depth(node.id, new Set());
   const groups = new Map<number, ObservedTask[]>();
   for (const node of nodes) {
     const level = levels.get(node.id) ?? 0;
@@ -232,6 +285,12 @@ export function layoutExecutionGraph(
   }
   const edges = nodes
     .filter((node) => node.parentId !== null && byId.has(node.parentId))
+    // Root-owned tasks with explicit prerequisites are connected through their
+    // dashed dependency edges. Suppress the root ownership line so it cannot
+    // cross a nested subtask and suggest a nonexistent A1 -> B relationship.
+    .filter((node) => !(node.kind === "plan" &&
+      byId.get(node.parentId!)?.kind === "run" &&
+      (prerequisites.get(node.id)?.length ?? 0) > 0))
     .map((node) => ({ from: node.parentId!, to: node.id }));
   return {
     width,
