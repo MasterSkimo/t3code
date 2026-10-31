@@ -10,6 +10,7 @@ import {
   OBSERVER_NODE_WIDTH,
   projectExecutionGraph,
   projectDynamicPlan,
+  summarizePlanProgress,
   type ObservedTask,
 } from "./observerModel";
 
@@ -108,6 +109,7 @@ export function PlotlineObserver({
   const graph = layoutExecutionGraph(nodes, dependencyEdges);
   const coordinates = new Map(graph.positions.map((item) => [item.node.id, item]));
   const selected = nodes.find((node) => node.id === selectedId) ?? null;
+  const planProgress = summarizePlanProgress(nodes);
   const running = nodes.filter((node) => ["running", "waiting"].includes(node.status)).length;
   const completed = nodes.filter((node) => node.status === "completed").length;
   const failed = nodes.filter((node) => ["failed", "interrupted"].includes(node.status)).length;
@@ -163,7 +165,12 @@ export function PlotlineObserver({
         ) : null}
         {nodes.length > 0 ? (
           <div className="mt-3 flex flex-wrap gap-3 text-[11px] text-muted-foreground">
-            {plan ? <span>{plan.tasks.length} planned</span> : null}
+            {plan ? (
+              <span>
+                Plan {planProgress.status} · {planProgress.completed}/{planProgress.total} completed
+                {planProgress.outstanding > 0 ? ` · ${planProgress.outstanding} outstanding` : ""}
+              </span>
+            ) : null}
             <span>{delegated} delegated</span>
             <span>{running} active</span>
             <span>{completed} completed</span>
