@@ -288,6 +288,7 @@ export function PlotlineObserver({
             <span className="inline-flex items-center gap-1.5"><span className="size-2.5 rounded-[3px] border border-violet-500 bg-violet-500/15" />Sub Task</span>
             <span className="inline-flex items-center gap-1.5"><span className="w-6 border-t-[2.5px] border-slate-500 dark:border-slate-300" />Parent / child</span>
             <span className="inline-flex items-center gap-1.5"><span className="w-6 border-t-[2.5px] border-dashed border-sky-600 dark:border-sky-300" />Dependency</span>
+            <span className="text-muted-foreground/80">Drag to pan · scroll to navigate</span>
           </div>
         ) : null}
       </header>
@@ -305,7 +306,8 @@ export function PlotlineObserver({
           <div
             ref={viewportRef}
             className={`min-h-0 flex-1 overflow-auto bg-muted/15 select-none ${dragging ? "cursor-grabbing" : "cursor-grab"}`}
-            aria-label="Execution graph"
+            aria-label="Execution graph. Drag with the left mouse button to pan in any direction."
+            tabIndex={0}
             title="Hold left mouse button and drag to navigate the graph"
             onPointerDown={startPan}
             onPointerMove={movePan}
@@ -416,7 +418,7 @@ export function PlotlineObserver({
               </div>
             ) : (
               <p className="text-xs text-muted-foreground">
-                Select a node to inspect it. Solid lines indicate ownership; dashed lines indicate plan dependencies.
+                Drag to pan across the graph; select a node to inspect it. Solid lines indicate ownership; dashed lines indicate plan dependencies.
               </p>
             )}
           </footer>
