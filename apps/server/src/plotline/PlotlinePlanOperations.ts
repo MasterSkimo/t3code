@@ -9,7 +9,8 @@ import {
   type PlotlinePlanMutationResult as MutationResult,
   type PlotlinePlanTask as PlanTask,
 } from "@t3tools/contracts";
-import { createHash } from "node:crypto";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Request IDs need a synchronous digest inside the SQLite transaction.
+import * as NodeCrypto from "node:crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -249,8 +250,8 @@ export const evolvePlan = (current: Plan | null, mutation: PlanMutation, now: st
  * Concurrent agents cannot overwrite one another with last-writer-wins JSON.
  */
 export const makePlanOperations = (sql: SqlClient.SqlClient) => {
-  const getPlan = (rootThreadId: string) =>
-    Effect.gen(function* () {
+  const getPlan = Effect.fn("PlotlinePlanOperations.getPlan")(
+    function* (rootThreadId: string) {
       const rows = yield* sql<{ readonly payload_json: string }>`
         SELECT payload_json FROM fork_plotline_plans WHERE root_thread_id = ${rootThreadId}
       `;
@@ -259,16 +260,14 @@ export const makePlanOperations = (sql: SqlClient.SqlClient) => {
         try: () => decode(rows[0]!.payload_json),
         catch: () => fail("Persisted Plotline plan is invalid."),
       });
-    }).pipe(
-      Effect.mapError((error) =>
-        fail(error instanceof Error ? error.message : "Plan read failed."),
-      ),
-    );
+    },
+    Effect.mapError((error) => fail(error instanceof Error ? error.message : "Plan read failed.")),
+  );
 
-  const mutatePlan = (
+  const mutatePlan = Effect.fn("PlotlinePlanOperations.mutatePlan")(function* (
     mutation: PlanMutation,
-  ): Effect.Effect<MutationResult, PlotlineStorageError> =>
-    sql
+  ): Effect.fn.Return<MutationResult, PlotlineStorageError> {
+    return yield* sql
       .withTransaction(
         Effect.gen(function* () {
           const requestJson = JSON.stringify(mutation.input);
@@ -276,7 +275,7 @@ export const makePlanOperations = (sql: SqlClient.SqlClient) => {
           // an identical retry gets the same receipt after a connection failure.
           const id =
             mutation.input.requestId ??
-            `auto-${createHash("sha256")
+            `auto-${NodeCrypto.createHash("sha256")
               .update(
                 [mutation.rootThreadId, mutation.actorThreadId, mutation.kind, requestJson].join(
                   "\\0",
@@ -343,6 +342,7 @@ export const makePlanOperations = (sql: SqlClient.SqlClient) => {
           fail(error instanceof Error ? error.message : "Plan mutation failed."),
         ),
       );
+  });
 
   return { getPlan, mutatePlan };
 };

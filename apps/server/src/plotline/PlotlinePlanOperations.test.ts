@@ -1,5 +1,4 @@
 import { assert, describe, it } from "@effect/vitest";
-import type { PlotlinePlan } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
 import { evolvePlan } from "./PlotlinePlanOperations.ts";

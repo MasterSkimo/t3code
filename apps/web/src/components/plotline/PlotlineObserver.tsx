@@ -37,6 +37,7 @@ import {
 import { usePlotlineBottomStore } from "./plotlineBottomStore";
 import { useTerminalUiStateStore } from "../../terminalUiStateStore";
 import { useRightPanelStore } from "../../rightPanelStore";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 /**
  * Read-only execution observer. T3 owns all delegation, scheduling, completion,
@@ -54,7 +55,7 @@ function statusStyle(status: string): string {
       return "text-sky-600 dark:text-sky-400";
     case "failed":
     case "interrupted":
-      return "text-rose-600 dark:text-rose-400";
+      return "text-error dark:text-rose-400";
     default:
       return "text-muted-foreground";
   }
@@ -85,9 +86,9 @@ function ObservedNodeCard({
 }) {
   const isSubtask = node.kind === "plan" && node.isSubtask === true;
   const typeStyle = isSubtask
-    ? "w-[calc(100%-20px)] border-violet-500/65 bg-violet-500/[0.08] border-l-[3px] border-l-violet-500 dark:bg-violet-500/[0.12]"
+    ? "w-[calc(100%-20px)] border-plotline-subtask/65 bg-plotline-subtask/[0.08] border-l-2 border-l-plotline-subtask dark:bg-plotline-subtask/[0.12]"
     : node.kind === "plan"
-      ? "border-sky-500/50 bg-info/[0.04] dark:bg-info/[0.07]"
+      ? "border-info/50 bg-info/[0.04] dark:bg-info/[0.07]"
       : unbound
         ? "border-dashed border-primary bg-primary/5"
         : "border-border bg-card";
@@ -96,13 +97,13 @@ function ObservedNodeCard({
       type="button"
       onClick={onSelect}
       aria-pressed={selected}
-      className={`mx-auto flex h-full flex-col gap-2 overflow-hidden border p-3 text-left shadow-sm transition-colors hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary ${typeStyle} ${selected || highlighted ? "ring-2 ring-primary" : ""} ${isSubtask ? "rounded-lg" : "w-full rounded-xl"}`}
+      className={`mx-auto flex h-full flex-col gap-2 overflow-hidden border p-3 text-left shadow-sm transition-colors hover:brightness-110 focus-visible:outline-2 focus-visible:ring-inset focus-visible:outline-primary ${typeStyle} ${selected || highlighted ? "ring-2 ring-primary" : ""} ${isSubtask ? "rounded-lg" : "w-full rounded-xl"}`}
     >
       <div
         className={`flex w-full min-w-0 items-center justify-between gap-2 ${expandable ? "pr-7" : ""}`}
       >
         <span
-          className={`flex min-w-0 items-center gap-1 truncate text-[10px] font-semibold uppercase tracking-wider ${isSubtask ? "text-violet-600 dark:text-violet-300" : "text-muted-foreground"}`}
+          className={`flex min-w-0 items-center gap-1 truncate text-3xs font-semibold uppercase tracking-wider ${isSubtask ? "text-plotline-subtask-label dark:text-plotline-subtask-label-dark" : "text-muted-foreground"}`}
         >
           {isSubtask ? <CornerDownRight className="size-3 shrink-0" aria-hidden="true" /> : null}
           {node.kind === "run"
@@ -115,13 +116,13 @@ function ObservedNodeCard({
                   ? "Unbound subagent"
                   : "Subagent"}
         </span>
-        <span className="flex items-center gap-1 text-[10px]">
+        <span className="flex items-center gap-1 text-3xs">
           <StatusIcon status={node.status} />
           <span className={statusStyle(node.status)}>{node.status}</span>
         </span>
       </div>
       <div className="line-clamp-2 min-w-0 text-xs font-semibold leading-relaxed">{node.title}</div>
-      <div className="truncate text-[10px] text-muted-foreground">
+      <div className="truncate text-3xs text-muted-foreground">
         {node.provider ?? "Model unavailable"}
       </div>
     </button>
@@ -218,11 +219,12 @@ export function PlotlineObserver({
     }),
   );
   const plan = selectedRunId === "live" ? (planQuery.data?.plan ?? null) : null;
+  const refreshPlan = planQuery.refresh;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Refresh the live plan while the observer is mounted.
   useEffect(() => {
-    // Refresh only the observed plan, never T3's orchestration.
-    const timer = setInterval(() => planQuery.refresh(), 2500);
+    const timer = setInterval(refreshPlan, 2500);
     return () => clearInterval(timer);
-  }, [planQuery.refresh, threadRef.threadId]);
+  }, [refreshPlan]);
   const history = saved.data?.dags ?? [];
   const stored = history.find((dag) => dag.runId === selectedRunId);
   const live = plan
@@ -366,41 +368,49 @@ export function PlotlineObserver({
             <GitFork className="size-4 shrink-0 text-muted-foreground" />
             <div className="min-w-0">
               <h2 className="truncate text-sm font-semibold">Plotline</h2>
-              <p className="text-[11px] text-muted-foreground">Execution observer · read only</p>
+              <p className="text-2xs text-muted-foreground">Execution observer · read only</p>
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
             {placement === "right" ? (
-              <button
-                type="button"
-                title="Show this DAG in the bottom panel"
-                aria-label="Open Plotline in bottom panel"
-                onClick={() => {
-                  // Reuse the existing bottom drawer instead of creating a new
-                  // native terminal surface or replacing the right panel.
-                  useTerminalUiStateStore.getState().setTerminalOpen(threadRef, true);
-                  usePlotlineBottomStore.getState().open(threadRef);
-                  useRightPanelStore.getState().close(threadRef);
-                }}
-                className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] hover:bg-muted"
-              >
-                <PanelBottom className="size-3.5" aria-hidden="true" />
-                Bottom
-              </button>
+              <Tooltip>
+                <TooltipTrigger render={<span className="inline-flex" />}>
+                  <button
+                    type="button"
+                    aria-label="Open Plotline in bottom panel"
+                    onClick={() => {
+                      // Reuse the existing bottom drawer instead of creating a new
+                      // native terminal surface or replacing the right panel.
+                      useTerminalUiStateStore.getState().setTerminalOpen(threadRef, true);
+                      usePlotlineBottomStore.getState().open(threadRef);
+                      useRightPanelStore.getState().close(threadRef);
+                    }}
+                    className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-2xs hover:bg-muted"
+                  >
+                    <PanelBottom className="size-3.5" aria-hidden="true" />
+                    Bottom
+                  </button>
+                </TooltipTrigger>
+                <TooltipPopup>Show this DAG in the bottom panel</TooltipPopup>
+              </Tooltip>
             ) : null}
-            <button
-              type="button"
-              onClick={() => {
-                void exportPng();
-              }}
-              disabled={exporting || graph.positions.length === 0}
-              aria-label="Export Plotline DAG as PNG image"
-              title="Export complete DAG as PNG (including off-screen nodes)"
-              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2 py-1 text-[11px] hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <Download className="size-3.5" aria-hidden="true" />
-              {exporting ? "Exporting…" : "Export PNG"}
-            </button>
+            <Tooltip>
+              <TooltipTrigger render={<span className="inline-flex" />}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void exportPng();
+                  }}
+                  disabled={exporting || graph.positions.length === 0}
+                  aria-label="Export Plotline DAG as PNG image"
+                  className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2 py-1 text-2xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Download className="size-3.5" aria-hidden="true" />
+                  {exporting ? "Exporting…" : "Export PNG"}
+                </button>
+              </TooltipTrigger>
+              <TooltipPopup>Export complete DAG as PNG (including off-screen nodes)</TooltipPopup>
+            </Tooltip>
             <select
               aria-label="Plotline run history"
               value={selectedRunId}
@@ -408,7 +418,7 @@ export function PlotlineObserver({
                 setSelectedRunId(event.target.value);
                 setSelectedId(null);
               }}
-              className="max-w-32 rounded-md border border-border bg-background px-2 py-1 text-[11px]"
+              className="max-w-32 rounded-md border border-border bg-background px-2 py-1 text-2xs"
             >
               <option value="live">Live</option>
               {history.map((dag) => (
@@ -417,21 +427,25 @@ export function PlotlineObserver({
                 </option>
               ))}
             </select>
-            <button
-              type="button"
-              onClick={() => {
-                saved.refresh();
-                planQuery.refresh();
-              }}
-              className="rounded-md border border-border px-2 py-1 text-[11px]"
-              title="Reload saved DAGs"
-            >
-              Reload
-            </button>
+            <Tooltip>
+              <TooltipTrigger render={<span className="inline-flex" />}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    saved.refresh();
+                    planQuery.refresh();
+                  }}
+                  className="rounded-md border border-border px-2 py-1 text-2xs"
+                >
+                  Reload
+                </button>
+              </TooltipTrigger>
+              <TooltipPopup>Reload saved DAGs</TooltipPopup>
+            </Tooltip>
           </div>
         </div>
         {exportError ? (
-          <p role="alert" className="mt-2 text-xs text-rose-600">
+          <p role="alert" className="mt-2 text-xs text-error">
             {exportError}
           </p>
         ) : null}
@@ -441,23 +455,23 @@ export function PlotlineObserver({
           </p>
         ) : null}
         {saved.error ? (
-          <p role="status" className="mt-2 text-xs text-rose-600">
+          <p role="status" className="mt-2 text-xs text-error">
             {saved.error}
           </p>
         ) : null}
         {planQuery.error ? (
-          <p role="status" className="mt-2 text-xs text-rose-600">
+          <p role="status" className="mt-2 text-xs text-error">
             {planQuery.error}
           </p>
         ) : null}
         {plan ? (
-          <p className="mt-2 text-[11px] text-muted-foreground">
+          <p className="mt-2 text-2xs text-muted-foreground">
             Plan revision {plan.revision} · {plan.tasks.length} tasks · dependencies shown as dashed
             lines
           </p>
         ) : null}
         {nodes.length > 0 ? (
-          <div className="mt-3 flex flex-wrap gap-3 text-[11px] text-muted-foreground">
+          <div className="mt-3 flex flex-wrap gap-3 text-2xs text-muted-foreground">
             {plan ? (
               <span>
                 Plan {planProgress.status} · {planProgress.completed}/{planProgress.total} completed
@@ -473,23 +487,23 @@ export function PlotlineObserver({
         ) : null}
         {plan ? (
           <div
-            className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[10px] text-muted-foreground"
+            className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-3xs text-muted-foreground"
             aria-label="Plotline graph legend"
           >
             <span className="inline-flex items-center gap-1.5">
-              <span className="size-2.5 rounded-[3px] border border-sky-500 bg-info/15" />
+              <span className="size-2.5 rounded-xs border border-info bg-info/15" />
               Task
             </span>
             <span className="inline-flex items-center gap-1.5">
-              <span className="size-2.5 rounded-[3px] border border-violet-500 bg-violet-500/15" />
+              <span className="size-2.5 rounded-xs border border-plotline-subtask bg-plotline-subtask/15" />
               Sub Task
             </span>
             <span className="inline-flex items-center gap-1.5">
-              <span className="w-6 border-t-[2.5px] border-slate-500 dark:border-slate-300" />
+              <span className="w-6 border-t-2 border-foreground/70" />
               Parent / child
             </span>
             <span className="inline-flex items-center gap-1.5">
-              <span className="w-6 border-t-[2.5px] border-dashed border-sky-600 dark:border-sky-300" />
+              <span className="w-6 border-t-2 border-dashed border-info" />
               Dependency
             </span>
             <span className="text-muted-foreground/80">Drag to pan · scroll to navigate</span>
@@ -510,10 +524,9 @@ export function PlotlineObserver({
         <>
           <div
             ref={viewportRef}
-            className={`min-h-0 flex-1 overflow-auto bg-muted/15 select-none ${dragging ? "cursor-grabbing" : "cursor-grab"}`}
+            className={`min-h-0 flex-1 overflow-auto scrollbar-gutter-both bg-muted/15 select-none ${dragging ? "cursor-grabbing" : "cursor-grab"}`}
             aria-label="Execution graph. Drag with the left mouse button to pan in any direction."
             tabIndex={0}
-            title="Hold left mouse button and drag to navigate the graph"
             onPointerDown={startPan}
             onPointerMove={movePan}
             onPointerUp={stopPan}
@@ -569,7 +582,7 @@ export function PlotlineObserver({
                     <path
                       d="M 0 0 L 7 4.5 L 0 9"
                       fill="none"
-                      stroke="#38bdf8"
+                      stroke="var(--color-info)"
                       strokeWidth="2"
                       strokeLinecap="round"
                       strokeLinejoin="round"
@@ -578,7 +591,7 @@ export function PlotlineObserver({
                 </defs>
                 {/* Geometry is shared with PNG export. Routes stay in row gaps
                     and column gutters instead of crossing other task cards. */}
-                {routes.map((route, index) => {
+                {routes.map((route) => {
                   const hierarchy = route.kind === "hierarchy";
                   const highlightedRoute = highlighted?.edges.some(
                     (edge) =>
@@ -600,11 +613,11 @@ export function PlotlineObserver({
                   const d = plotlineRoutePath(route.points);
                   return (
                     <g
-                      key={`${route.kind}:${route.from}:${route.to}:${index}`}
+                      key={`${route.kind}:${route.from}:${route.to}`}
                       className={
                         hierarchy
-                          ? "text-slate-500 transition-opacity duration-300 dark:text-slate-300"
-                          : "text-sky-600 transition-opacity duration-300 dark:text-sky-300"
+                          ? "text-foreground/70 transition-opacity duration-300"
+                          : "text-info transition-opacity duration-300"
                       }
                       opacity={opacity}
                     >

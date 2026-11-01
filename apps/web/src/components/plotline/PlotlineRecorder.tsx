@@ -30,12 +30,11 @@ export function PlotlineRecorder({ threadRef, projection }: Props) {
     reportFailure: false,
     reportDefect: false,
   });
-  const persist = useEffectEvent((draft: {
-    readonly environmentId: EnvironmentId;
-    readonly input: PlotlineSaveInput;
-  }) => {
-    void save(draft);
-  });
+  const persist = useEffectEvent(
+    (draft: { readonly environmentId: EnvironmentId; readonly input: PlotlineSaveInput }) => {
+      void save(draft);
+    },
+  );
 
   // Include only the latest run of the thread. Historical runs have their own
   // persisted records and will not be overwritten by the next run.
@@ -61,6 +60,7 @@ export function PlotlineRecorder({ threadRef, projection }: Props) {
           },
         };
   const serialized = snapshot ? JSON.stringify(snapshot) : null;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Keeps the debounce timer in step with the latest persisted snapshot.
   useEffect(() => {
     if (serialized === null) return;
     // Debounce T3's high-frequency run and subagent projection updates.

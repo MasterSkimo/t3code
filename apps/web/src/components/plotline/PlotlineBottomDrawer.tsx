@@ -1,10 +1,8 @@
-import type {
-  OrchestrationV2ThreadProjection,
-  ScopedThreadRef,
-} from "@t3tools/contracts";
+import type { OrchestrationV2ThreadProjection, ScopedThreadRef } from "@t3tools/contracts";
 import { X, TerminalSquare } from "lucide-react";
 import { useRef, useState, type PointerEvent } from "react";
 
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { usePlotlineBottomStore } from "./plotlineBottomStore";
 import { PlotlineObserver } from "./PlotlineObserver";
 
@@ -16,9 +14,7 @@ interface Props {
 }
 
 /** A fork-owned Plotline tab above the chat composer, parallel to terminal drawer. */
-export function PlotlineBottomDrawer({
-  threadRef, projection, height, onClosePanel,
-}: Props) {
+export function PlotlineBottomDrawer({ threadRef, projection, height, onClosePanel }: Props) {
   const close = usePlotlineBottomStore((state) => state.close);
   // Initial height favors the DAG. Resizing remains independent from terminal
   // height preference so the terminal reopens at its previous size.
@@ -27,7 +23,11 @@ export function PlotlineBottomDrawer({
   const onResizeStart = (event: PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
     event.preventDefault();
-    resize.current = { pointerId: event.pointerId, startY: event.clientY, startHeight: drawerHeight };
+    resize.current = {
+      pointerId: event.pointerId,
+      startY: event.clientY,
+      startHeight: drawerHeight,
+    };
     event.currentTarget.setPointerCapture(event.pointerId);
   };
   const onResizeMove = (event: PointerEvent<HTMLDivElement>) => {
@@ -58,26 +58,40 @@ export function PlotlineBottomDrawer({
         onLostPointerCapture={onResizeStop}
       />
       <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-3 pt-1 text-xs">
-        <span className="rounded-t border-b-2 border-primary px-2 py-1 font-semibold">Plotline</span>
-        <button
-          type="button"
-          onClick={() => close(threadRef)}
-          className="inline-flex items-center gap-1 rounded px-2 py-1 text-muted-foreground hover:bg-muted"
-          title="Show terminal drawer"
-        >
-          <TerminalSquare className="size-3.5" />
-          Terminal
-        </button>
+        <span className="rounded-t border-b-2 border-primary px-2 py-1 font-semibold">
+          Plotline
+        </span>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <button
+                type="button"
+                onClick={() => close(threadRef)}
+                className="inline-flex items-center gap-1 rounded px-2 py-1 text-muted-foreground hover:bg-muted"
+              />
+            }
+          >
+            <TerminalSquare className="size-3.5" />
+            Terminal
+          </TooltipTrigger>
+          <TooltipPopup>Show terminal drawer</TooltipPopup>
+        </Tooltip>
         <div className="flex-1" />
-        <button
-          type="button"
-          aria-label="Close Plotline bottom panel"
-          title="Close bottom panel"
-          className="rounded p-1 text-muted-foreground hover:bg-muted"
-          onClick={onClosePanel}
-        >
-          <X className="size-4" />
-        </button>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <button
+                type="button"
+                aria-label="Close Plotline bottom panel"
+                className="rounded p-1 text-muted-foreground hover:bg-muted"
+                onClick={onClosePanel}
+              />
+            }
+          >
+            <X className="size-4" />
+          </TooltipTrigger>
+          <TooltipPopup>Close bottom panel</TooltipPopup>
+        </Tooltip>
       </div>
       <div className="min-h-0 flex-1 overflow-hidden">
         <PlotlineObserver projection={projection} threadRef={threadRef} placement="bottom" />
