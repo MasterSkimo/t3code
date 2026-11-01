@@ -39,6 +39,7 @@ import { useLogicalProjectEnvironments } from "../hooks/useLogicalProjectEnviron
 import { useStableCallback } from "../hooks/useStableCallback";
 import { useProjectScriptEditing } from "./chat/useProjectScriptEditing";
 import { RightPanelSurfaceContent } from "./chat/RightPanelSurfaceContent";
+import { PlotlineRecorder } from "./plotline/PlotlineRecorder";
 import { usePendingThreadRequests } from "./chat/usePendingThreadRequests";
 import { isScratchProject } from "@t3tools/client-runtime/state/projects";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
@@ -351,6 +352,8 @@ import { useAtomQueryRunner } from "../state/use-atom-query-runner";
 import { observeResize } from "~/lib/observeResize";
 import { ThreadVisitWatermark } from "./chat/ThreadVisitWatermark";
 import { ChatTerminalDrawers } from "./chat/ChatTerminalDrawers";
+import { PlotlineBottomDrawer } from "./plotline/PlotlineBottomDrawer";
+import { usePlotlineBottomStore } from "./plotline/plotlineBottomStore";
 import { ChatRightPanel } from "./chat/ChatRightPanel";
 import { useDraftEnvironmentRouting } from "./chat/useDraftEnvironmentRouting";
 import { branchMismatchBannerItem } from "./chat/ThreadActivityBanners";
@@ -962,6 +965,11 @@ export default function ChatView(props: ChatViewProps) {
   })();
   const activeThreadRef = useActiveThreadRef(activeThread);
   const activeThreadKey = activeThreadRef ? scopedThreadKey(activeThreadRef) : null;
+  // Plotline is an alternative view of the existing bottom terminal slot.
+  // It is fork-owned state; the T3 terminal sessions remain mounted.
+  const plotlineBottomByThread = usePlotlineBottomStore((state) => state.activeByThread);
+  const plotlineBottomOpen = activeThreadKey !== null &&
+    plotlineBottomByThread[activeThreadKey] === true;
   const activeEnvironmentServerBrowser = useEnvironmentSupportsServerBrowser(
     activeThreadRef?.environmentId ?? null,
   );
@@ -3105,6 +3113,7 @@ export default function ChatView(props: ChatViewProps) {
   const rightPanelContent = activeThreadRef ? (
     <RightPanelSurfaceContent
       surface={renderedRightPanelSurface}
+      plotlineProjection={serverProjection}
       activeSurfaceId={activeRightPanelSurface?.id ?? null}
       threadRef={activeThreadRef}
       environmentId={activeThread.environmentId}
@@ -3803,7 +3812,8 @@ export default function ChatView(props: ChatViewProps) {
           </ThreadFindCanvas>
         </div>
 
-        <ChatTerminalDrawers
+        <div className={plotlineBottomOpen ? "hidden" : "contents"}>
+          <ChatTerminalDrawers
           activeThreadKey={activeThreadKey}
           activeTerminalOpen={Boolean(terminalUiState.terminalOpen)}
           composerHeight={composerReservedHeight}
@@ -3814,7 +3824,19 @@ export default function ChatView(props: ChatViewProps) {
           closeShortcutLabel={closeTerminalShortcutLabel ?? undefined}
           keybindings={keybindings}
           onAddTerminalContext={addTerminalContextToDraftStable}
-        />
+          />
+        </div>
+        {plotlineBottomOpen && activeThreadRef ? (
+          <PlotlineBottomDrawer
+            threadRef={activeThreadRef}
+            projection={serverProjection}
+            height={terminalUiState.terminalHeight}
+            onClosePanel={() => {
+              usePlotlineBottomStore.getState().close(activeThreadRef);
+              useTerminalUiStateStore.getState().setTerminalOpen(activeThreadRef, false);
+            }}
+          />
+        ) : null}
       </div>
 
       {rightPanelPresent && activeThreadRef ? (
@@ -3866,6 +3888,11 @@ export default function ChatView(props: ChatViewProps) {
           onAddPullRequest={addPullRequestSurfaceStable}
           onAddPullRequests={addPullRequestsSurfaceStable}
           onAddDevice={addDeviceSurfaceStable}
+          onAddPlotline={() => {
+            if (activeThreadRef) useRightPanelStore.getState().open(activeThreadRef, "plotline");
+          }}
+          // Saved DAGs remain accessible while the native thread projection is unavailable.
+          plotlineAvailable={isServerThread}
           browserAvailable={canOperatePreview && browserAvailable}
           terminalAvailable={activeProject !== null && canOperateTerminal}
           diffAvailable={isServerThread && isGitRepo}
@@ -3878,6 +3905,7 @@ export default function ChatView(props: ChatViewProps) {
         </ChatRightPanel>
       ) : null}
 
+      <PlotlineRecorder threadRef={activeThreadRef} projection={serverProjection} />
       <RevertConfirmHost threadKey={routeThreadKey} onConfirm={onConfirmRevertStable} />
       <LinkPullRequestDialogHost />
       <ThreadVisitWatermark threadRef={routeThreadRef} />

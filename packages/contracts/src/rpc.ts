@@ -34,6 +34,15 @@ import {
   ChatGptHandoffState,
 } from "./providerSetup.ts";
 import * as Schema from "effect/Schema";
+import { PLOTLINE_PLAN_METHODS, PlotlinePlanGet, PlotlinePlanGetResult } from "./plotlinePlan.ts";
+import {
+  PLOTLINE_WS_METHODS,
+  PlotlineListInput,
+  PlotlineListResult,
+  PlotlineSaveInput,
+  PlotlineDagSnapshot,
+  PlotlineStorageError,
+} from "./plotlineObserver.ts";
 import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as RpcMiddleware from "effect/rpc/RpcMiddleware";
@@ -405,6 +414,9 @@ import { VcsError } from "./vcs.ts";
 import { Project, ProjectMutation, ProjectMutationError } from "./project.ts";
 
 export const WS_METHODS = {
+  plotlineList: PLOTLINE_WS_METHODS.list,
+  plotlineSave: PLOTLINE_WS_METHODS.save,
+  plotlinePlanGet: PLOTLINE_PLAN_METHODS.get,
   projectsListEntries: "projects.listEntries",
   projectsListIgnoredFiles: "projects.listIgnoredFiles",
   projectsReadFile: "projects.readFile",
@@ -1969,7 +1981,26 @@ export class RpcScopeAuthorization extends RpcMiddleware.Service<RpcScopeAuthori
   { error: EnvironmentAuthorizationError },
 ) {}
 
+const WsPlotlinePlanGetRpc = Rpc.make(WS_METHODS.plotlinePlanGet, {
+  payload: PlotlinePlanGet,
+  success: PlotlinePlanGetResult,
+  error: Schema.Union([PlotlineStorageError, EnvironmentAuthorizationError]),
+});
+const WsPlotlineListRpc = Rpc.make(WS_METHODS.plotlineList, {
+  payload: PlotlineListInput,
+  success: PlotlineListResult,
+  error: Schema.Union([PlotlineStorageError, EnvironmentAuthorizationError]),
+});
+const WsPlotlineSaveRpc = Rpc.make(WS_METHODS.plotlineSave, {
+  payload: PlotlineSaveInput,
+  success: PlotlineDagSnapshot,
+  error: Schema.Union([PlotlineStorageError, EnvironmentAuthorizationError]),
+});
+
 export const WsRpcGroup = RpcGroup.make(
+  WsPlotlineListRpc,
+  WsPlotlineSaveRpc,
+  WsPlotlinePlanGetRpc,
   WsGuestShareCreateRpc,
   WsServerProbeRpc,
   WsServerGetConfigRpc,

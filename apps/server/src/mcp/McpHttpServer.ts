@@ -43,6 +43,7 @@ import { advertisedJsonSchema } from "./advertisedJsonSchema.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpToolAccess from "./McpToolAccess.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
+import * as PlotlineStore from "../plotline/PlotlineStore.ts";
 import { PreviewControlsToolkit } from "./toolkits/previewControls/tools.ts";
 import * as PreviewControlsHandlers from "./toolkits/previewControls/handlers.ts";
 import { EnvironmentToolkit } from "./toolkits/environment/tools.ts";
@@ -58,6 +59,8 @@ import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
 import * as OrchestratorHandlers from "./toolkits/orchestrator/handlers.ts";
 import { OrchestratorToolkit } from "./toolkits/orchestrator/tools.ts";
+import { PlotlineToolkit } from "./toolkits/plotline/tools.ts";
+import * as PlotlineHandlers from "./toolkits/plotline/handlers.ts";
 import * as PreviewHandlers from "./toolkits/preview/handlers.ts";
 import {
   PreviewSnapshotTool,
@@ -1098,6 +1101,11 @@ export const layerOrchestratorToolkit = toolkitRegistration(
 
 export const layerThreadToolkit = toolkitRegistration(ThreadToolkit, ThreadHandlers.layer);
 
+// Fork-owned metadata tools. They never issue an orchestration command.
+export const layerPlotlineToolkit = toolkitRegistration(
+  PlotlineToolkit, PlotlineHandlers.layer,
+).pipe(Layer.provide(PlotlineStore.optionalLayer));
+
 const layerWorktreeToolkitRegistration = toolkitRegistration(
   WorktreeToolkit,
   WorktreeHandlers.layer,
@@ -1152,6 +1160,7 @@ export const layerMcpTransport = McpServer.layerHttp({
 export const layerTools = Layer.mergeAll(
   layerPreviewToolkit,
   layerOrchestratorToolkit,
+  layerPlotlineToolkit,
   layerThreadToolkit,
   layerAttachmentToolkit,
   layerProjectRegistration,

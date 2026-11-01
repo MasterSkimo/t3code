@@ -247,6 +247,9 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   --color-diff-deletion-foreground: var(--diff-deletion-foreground);
   --color-info-foreground: var(--info-foreground);
   --color-info: var(--info);
+  --color-plotline-subtask: var(--color-violet-500);
+  --color-plotline-subtask-label: var(--color-violet-600);
+  --color-plotline-subtask-label-dark: var(--color-violet-300);
   --color-guest: var(--guest);
   --color-guest-foreground: var(--guest-foreground);
   --color-guest-surface: var(--guest-surface);
