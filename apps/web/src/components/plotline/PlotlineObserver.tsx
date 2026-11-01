@@ -1,7 +1,18 @@
 import type { OrchestrationV2ThreadProjection, ScopedThreadRef } from "@t3tools/contracts";
 import { plotlineEnvironment } from "../../state/plotline";
 import { useEnvironmentQuery } from "../../state/query";
-import { CheckCircle2, Circle, CornerDownRight, Download, GitFork, PanelBottom, LoaderCircle, XCircle } from "lucide-react";
+import {
+  CheckCircle2,
+  Circle,
+  CornerDownRight,
+  Download,
+  GitFork,
+  PanelBottom,
+  LoaderCircle,
+  XCircle,
+  ChevronDown,
+  ChevronRight,
+} from "lucide-react";
 import { useEffect, useRef, useState, type PointerEvent } from "react";
 
 import {
@@ -11,10 +22,18 @@ import {
   projectExecutionGraph,
   projectDynamicPlan,
   summarizePlanProgress,
+  visiblePlotlineTasks,
   type ObservedTask,
 } from "./observerModel";
 import { downloadPlotlinePng, isDarkPlotlineSurface } from "./plotlinePng";
-import { plotlineRoutePath, routePlotlineEdges } from "./observerRouting";
+import { layoutObserverGroupedGraph } from "./observerGroupedLayout";
+import {
+  groupPlotlineRouteSegments,
+  plotlineCrossings,
+  plotlineRoutePath,
+  routePlotlineEdges,
+  type PlotlineRouteSegment,
+} from "./observerRouting";
 import { usePlotlineBottomStore } from "./plotlineBottomStore";
 import { useTerminalUiStateStore } from "../../terminalUiStateStore";
 import { useRightPanelStore } from "../../rightPanelStore";
@@ -45,8 +64,7 @@ function StatusIcon({ status }: { readonly status: string }) {
   const style = `size-3.5 shrink-0 ${statusStyle(status)}`;
   if (status === "completed") return <CheckCircle2 className={style} />;
   if (status === "running") return <LoaderCircle className={style} />;
-  if (["failed", "cancelled", "interrupted"].includes(status))
-    return <XCircle className={style} />;
+  if (["failed", "cancelled", "interrupted"].includes(status)) return <XCircle className={style} />;
   return <Circle className={style} />;
 }
 
@@ -54,28 +72,48 @@ function ObservedNodeCard({
   node,
   selected,
   onSelect,
+  unbound = false,
+  highlighted = false,
+  expandable = false,
 }: {
   readonly node: ObservedTask;
   readonly selected: boolean;
   readonly onSelect: () => void;
+  readonly unbound?: boolean;
+  readonly highlighted?: boolean;
+  readonly expandable?: boolean;
 }) {
   const isSubtask = node.kind === "plan" && node.isSubtask === true;
   const typeStyle = isSubtask
     ? "w-[calc(100%-20px)] border-violet-500/65 bg-violet-500/[0.08] border-l-[3px] border-l-violet-500 dark:bg-violet-500/[0.12]"
     : node.kind === "plan"
-      ? "border-sky-500/50 bg-sky-500/[0.04] dark:bg-sky-500/[0.07]"
-      : "border-border bg-card";
+      ? "border-sky-500/50 bg-info/[0.04] dark:bg-info/[0.07]"
+      : unbound
+        ? "border-dashed border-primary bg-primary/5"
+        : "border-border bg-card";
   return (
     <button
       type="button"
       onClick={onSelect}
       aria-pressed={selected}
-      className={`mx-auto flex h-full flex-col gap-2 overflow-hidden border p-3 text-left shadow-sm transition-colors hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary ${typeStyle} ${selected ? "ring-2 ring-primary" : ""} ${isSubtask ? "rounded-lg" : "w-full rounded-xl"}`}
+      className={`mx-auto flex h-full flex-col gap-2 overflow-hidden border p-3 text-left shadow-sm transition-colors hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary ${typeStyle} ${selected || highlighted ? "ring-2 ring-primary" : ""} ${isSubtask ? "rounded-lg" : "w-full rounded-xl"}`}
     >
-      <div className="flex w-full min-w-0 items-center justify-between gap-2">
-        <span className={`flex min-w-0 items-center gap-1 truncate text-[10px] font-semibold uppercase tracking-wider ${isSubtask ? "text-violet-600 dark:text-violet-300" : "text-muted-foreground"}`}>
+      <div
+        className={`flex w-full min-w-0 items-center justify-between gap-2 ${expandable ? "pr-7" : ""}`}
+      >
+        <span
+          className={`flex min-w-0 items-center gap-1 truncate text-[10px] font-semibold uppercase tracking-wider ${isSubtask ? "text-violet-600 dark:text-violet-300" : "text-muted-foreground"}`}
+        >
           {isSubtask ? <CornerDownRight className="size-3 shrink-0" aria-hidden="true" /> : null}
-          {node.kind === "run" ? "Conversation" : isSubtask ? "Sub Task" : node.kind === "plan" ? "Task" : "Subagent"}
+          {node.kind === "run"
+            ? "Conversation"
+            : isSubtask
+              ? "Sub Task"
+              : node.kind === "plan"
+                ? "Task"
+                : unbound
+                  ? "Unbound subagent"
+                  : "Subagent"}
         </span>
         <span className="flex items-center gap-1 text-[10px]">
           <StatusIcon status={node.status} />
@@ -83,9 +121,51 @@ function ObservedNodeCard({
         </span>
       </div>
       <div className="line-clamp-2 min-w-0 text-xs font-semibold leading-relaxed">{node.title}</div>
-      <div className="truncate text-[10px] text-muted-foreground">{node.provider ?? "Model unavailable"}</div>
+      <div className="truncate text-[10px] text-muted-foreground">
+        {node.provider ?? "Model unavailable"}
+      </div>
     </button>
   );
+}
+
+function buildPlotlineGeometry(topology: string) {
+  const input = JSON.parse(topology) as {
+    nodes: Pick<ObservedTask, "id" | "parentId" | "kind" | "isSubtask">[];
+    dependencies: { from: string; to: string }[];
+    expanded: string[];
+    grouped: boolean;
+  };
+  const geometryNodes: ObservedTask[] = input.nodes.map((node) => ({
+    ...node,
+    title: "",
+    status: "",
+    provider: null,
+    detail: "",
+    result: null,
+  }));
+  const expanded = new Set(input.expanded);
+  const visible = visiblePlotlineTasks(geometryNodes, expanded);
+  const visibleIds = new Set(visible.map((node) => node.id));
+  const dependencies = input.dependencies.filter(
+    (edge) => visibleIds.has(edge.from) && visibleIds.has(edge.to),
+  );
+  const grouped = input.grouped
+    ? layoutObserverGroupedGraph(geometryNodes, input.dependencies, expanded)
+    : null;
+  const graph = grouped ?? layoutExecutionGraph(visible, dependencies);
+  const dependencyKeys = new Set(dependencies.map((edge) => `${edge.from}\u0000${edge.to}`));
+  const hierarchy = graph.edges.filter(
+    (edge) => !dependencyKeys.has(`${edge.from}\u0000${edge.to}`),
+  );
+  const routePositions = graph.positions.map((position) =>
+    expanded.has(position.node.id) ? { ...position, height: OBSERVER_NODE_HEIGHT } : position,
+  );
+  const routes = routePlotlineEdges(routePositions, hierarchy, dependencies);
+  const segments = groupPlotlineRouteSegments(routes).filter((segment) =>
+    segment.edges.some((edge) => edge.kind === "dependency"),
+  );
+  const crossings = plotlineCrossings(segments);
+  return { grouped, graph, dependencies, routes, segments, crossings };
 }
 
 export function PlotlineObserver({
@@ -115,15 +195,29 @@ export function PlotlineObserver({
   const [exportError, setExportError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedRunId, setSelectedRunId] = useState("live");
-  const saved = useEnvironmentQuery(plotlineEnvironment.list({
-    environmentId: threadRef.environmentId,
-    input: { threadId: String(threadRef.threadId) },
-  }));
-  const planQuery = useEnvironmentQuery(plotlineEnvironment.plan({
-    environmentId: threadRef.environmentId,
-    input: { rootThreadId: String(threadRef.threadId) },
-  }));
-  const plan = selectedRunId === "live" ? planQuery.data?.plan ?? null : null;
+  const [expandedGroups, setExpandedGroups] = useState<ReadonlySet<string>>(() => new Set());
+  const [highlighted, setHighlighted] = useState<PlotlineRouteSegment | null>(null);
+  const touchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Clear the touch timer when the observer unmounts.
+  useEffect(
+    () => () => {
+      if (touchTimer.current) clearTimeout(touchTimer.current);
+    },
+    [],
+  );
+  const saved = useEnvironmentQuery(
+    plotlineEnvironment.list({
+      environmentId: threadRef.environmentId,
+      input: { threadId: String(threadRef.threadId) },
+    }),
+  );
+  const planQuery = useEnvironmentQuery(
+    plotlineEnvironment.plan({
+      environmentId: threadRef.environmentId,
+      input: { rootThreadId: String(threadRef.threadId) },
+    }),
+  );
+  const plan = selectedRunId === "live" ? (planQuery.data?.plan ?? null) : null;
   useEffect(() => {
     // Refresh only the observed plan, never T3's orchestration.
     const timer = setInterval(() => planQuery.refresh(), 2500);
@@ -134,19 +228,55 @@ export function PlotlineObserver({
   const live = plan
     ? projectDynamicPlan(plan, projection)
     : { nodes: projectExecutionGraph(projection), dependencies: [] };
-  const nodes = stored?.nodes ?? live.nodes;
+  const nodes: readonly ObservedTask[] = stored?.nodes ?? live.nodes;
   const dependencyEdges = stored ? [] : live.dependencies;
-  const graph = layoutExecutionGraph(nodes, dependencyEdges);
-  const routes = routePlotlineEdges(graph.positions, graph.edges, dependencyEdges);
+  const childrenByParent = new Map<string, ObservedTask[]>();
+  for (const node of nodes) {
+    if (!node.isSubtask || !node.parentId) continue;
+    const children = childrenByParent.get(node.parentId) ?? [];
+    children.push(node);
+    childrenByParent.set(node.parentId, children);
+  }
+  const groupParents = new Set(
+    plan && !stored
+      ? nodes
+          .filter(
+            (node) => node.kind === "plan" && !node.isSubtask && childrenByParent.has(node.id),
+          )
+          .map((node) => node.id)
+      : [],
+  );
+  const topology = JSON.stringify({
+    nodes: nodes.map(({ id, parentId, kind, isSubtask }) => ({ id, parentId, kind, isSubtask })),
+    dependencies: dependencyEdges,
+    expanded: [...expandedGroups].sort(),
+    grouped: !!plan && !stored,
+  });
+  const geometry = buildPlotlineGeometry(topology);
+  const actualNodes = new Map(nodes.map((node) => [node.id, node]));
+  const graph = {
+    ...geometry.graph,
+    positions: geometry.graph.positions.map((position) => ({
+      ...position,
+      node: actualNodes.get(position.node.id) ?? position.node,
+    })),
+  };
+  const { grouped, routes, segments, crossings } = geometry;
+  const visibleDependencies = geometry.dependencies;
+  const highlightedTasks = new Set(
+    highlighted?.edges
+      .filter((edge) => edge.kind === "dependency")
+      .flatMap((edge) => [edge.from, edge.to]) ?? [],
+  );
+  const titles = new Map(nodes.map((node) => [node.id, node.title]));
   const selected = nodes.find((node) => node.id === selectedId) ?? null;
   const planProgress = summarizePlanProgress(nodes);
   const running = nodes.filter((node) => ["running", "waiting"].includes(node.status)).length;
   const completed = nodes.filter((node) => node.status === "completed").length;
   const failed = nodes.filter((node) => ["failed", "interrupted"].includes(node.status)).length;
   const skipped = nodes.filter((node) => ["skipped", "cancelled"].includes(node.status)).length;
-  const delegated = selectedRunId === "live"
-    ? (projection?.subagents.length ?? 0)
-    : Math.max(0, nodes.length - 1);
+  const delegated =
+    selectedRunId === "live" ? (projection?.subagents.length ?? 0) : Math.max(0, nodes.length - 1);
 
   // Dragging the canvas does not trigger T3 actions; it only scrolls this view.
   const startPan = (event: PointerEvent<HTMLDivElement>) => {
@@ -203,7 +333,16 @@ export function PlotlineObserver({
         title: plan?.title ?? stored?.title ?? projection?.thread.title ?? "Plotline DAG",
         nodes: graph.positions,
         edges: graph.edges,
-        dependencies: dependencyEdges,
+        dependencies: visibleDependencies,
+        routes,
+        crossings,
+        compactChildren: new Map(
+          [...childrenByParent].filter(([id]) => groupParents.has(id) && !expandedGroups.has(id)),
+        ),
+        unboundIds: new Set(
+          plan ? nodes.filter((node) => node.kind === "delegation").map((node) => node.id) : [],
+        ),
+        groups: grouped?.groups,
         width: graph.width,
         height: graph.height,
         dark: isDarkPlotlineSurface(surfaceRef.current),
@@ -216,7 +355,11 @@ export function PlotlineObserver({
   };
 
   return (
-    <section ref={surfaceRef} className="flex h-full min-h-0 flex-col bg-background text-foreground" aria-label="Plotline execution observer">
+    <section
+      ref={surfaceRef}
+      className="flex h-full min-h-0 flex-col bg-background text-foreground"
+      aria-label="Plotline execution observer"
+    >
       <header className="shrink-0 border-b border-border px-4 py-3">
         <div className="flex items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-2">
@@ -247,7 +390,9 @@ export function PlotlineObserver({
             ) : null}
             <button
               type="button"
-              onClick={() => { void exportPng(); }}
+              onClick={() => {
+                void exportPng();
+              }}
               disabled={exporting || graph.positions.length === 0}
               aria-label="Export Plotline DAG as PNG image"
               title="Export complete DAG as PNG (including off-screen nodes)"
@@ -274,7 +419,10 @@ export function PlotlineObserver({
             </select>
             <button
               type="button"
-              onClick={() => { saved.refresh(); planQuery.refresh(); }}
+              onClick={() => {
+                saved.refresh();
+                planQuery.refresh();
+              }}
               className="rounded-md border border-border px-2 py-1 text-[11px]"
               title="Reload saved DAGs"
             >
@@ -282,12 +430,30 @@ export function PlotlineObserver({
             </button>
           </div>
         </div>
-        {exportError ? <p role="alert" className="mt-2 text-xs text-rose-600">{exportError}</p> : null}
-        {saved.error ? <p role="status" className="mt-2 text-xs text-rose-600">{saved.error}</p> : null}
-        {planQuery.error ? <p role="status" className="mt-2 text-xs text-rose-600">{planQuery.error}</p> : null}
+        {exportError ? (
+          <p role="alert" className="mt-2 text-xs text-rose-600">
+            {exportError}
+          </p>
+        ) : null}
+        {routes.some((route) => route.unroutable) ? (
+          <p role="status" className="mt-2 text-xs text-error">
+            Some connections could not be drawn without crossing tasks.
+          </p>
+        ) : null}
+        {saved.error ? (
+          <p role="status" className="mt-2 text-xs text-rose-600">
+            {saved.error}
+          </p>
+        ) : null}
+        {planQuery.error ? (
+          <p role="status" className="mt-2 text-xs text-rose-600">
+            {planQuery.error}
+          </p>
+        ) : null}
         {plan ? (
           <p className="mt-2 text-[11px] text-muted-foreground">
-            Plan revision {plan.revision} · {plan.tasks.length} tasks · dependencies shown as dashed lines
+            Plan revision {plan.revision} · {plan.tasks.length} tasks · dependencies shown as dashed
+            lines
           </p>
         ) : null}
         {nodes.length > 0 ? (
@@ -306,11 +472,26 @@ export function PlotlineObserver({
           </div>
         ) : null}
         {plan ? (
-          <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[10px] text-muted-foreground" aria-label="Plotline graph legend">
-            <span className="inline-flex items-center gap-1.5"><span className="size-2.5 rounded-[3px] border border-sky-500 bg-sky-500/15" />Task</span>
-            <span className="inline-flex items-center gap-1.5"><span className="size-2.5 rounded-[3px] border border-violet-500 bg-violet-500/15" />Sub Task</span>
-            <span className="inline-flex items-center gap-1.5"><span className="w-6 border-t-[2.5px] border-slate-500 dark:border-slate-300" />Parent / child</span>
-            <span className="inline-flex items-center gap-1.5"><span className="w-6 border-t-[2.5px] border-dashed border-sky-600 dark:border-sky-300" />Dependency</span>
+          <div
+            className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[10px] text-muted-foreground"
+            aria-label="Plotline graph legend"
+          >
+            <span className="inline-flex items-center gap-1.5">
+              <span className="size-2.5 rounded-[3px] border border-sky-500 bg-info/15" />
+              Task
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <span className="size-2.5 rounded-[3px] border border-violet-500 bg-violet-500/15" />
+              Sub Task
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <span className="w-6 border-t-[2.5px] border-slate-500 dark:border-slate-300" />
+              Parent / child
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <span className="w-6 border-t-[2.5px] border-dashed border-sky-600 dark:border-sky-300" />
+              Dependency
+            </span>
             <span className="text-muted-foreground/80">Drag to pan · scroll to navigate</span>
           </div>
         ) : null}
@@ -321,7 +502,8 @@ export function PlotlineObserver({
           <GitFork className="size-7 text-muted-foreground/60" />
           <p className="text-sm font-medium">No execution yet</p>
           <p className="max-w-xs text-xs text-muted-foreground">
-            T3 runs and delegated tasks appear here as they are recorded. Plotline never starts or changes a task.
+            T3 runs and delegated tasks appear here as they are recorded. Plotline never starts or
+            changes a task.
           </p>
         </div>
       ) : (
@@ -352,8 +534,21 @@ export function PlotlineObserver({
             onDragStart={(event) => event.preventDefault()}
           >
             <div className="relative mx-auto" style={{ width: graph.width, height: graph.height }}>
+              {grouped?.groups
+                .filter((group) => group.expanded && group.childIds.length > 0)
+                .map((group) => (
+                  <div
+                    key={group.id}
+                    className="pointer-events-none absolute rounded-xl border border-primary/50 bg-primary/5"
+                    style={{
+                      left: group.x,
+                      top: group.y,
+                      width: group.width,
+                      height: group.height,
+                    }}
+                  />
+                ))}
               <svg
-                aria-hidden="true"
                 className="pointer-events-none absolute inset-0"
                 width={graph.width}
                 height={graph.height}
@@ -385,18 +580,32 @@ export function PlotlineObserver({
                     and column gutters instead of crossing other task cards. */}
                 {routes.map((route, index) => {
                   const hierarchy = route.kind === "hierarchy";
-                  const focused = selectedId === null ||
-                    route.from === selectedId || route.to === selectedId;
-                  const opacity = selectedId !== null
-                    ? (focused ? 1 : 0.12)
-                    : hierarchy ? 0.9 : 0.5;
+                  const highlightedRoute = highlighted?.edges.some(
+                    (edge) =>
+                      edge.from === route.from && edge.to === route.to && edge.kind === route.kind,
+                  );
+                  const focused =
+                    selectedId === null || route.from === selectedId || route.to === selectedId;
+                  const opacity = highlighted
+                    ? highlightedRoute
+                      ? 1
+                      : 0.12
+                    : selectedId !== null
+                      ? focused
+                        ? 1
+                        : 0.12
+                      : hierarchy
+                        ? 0.9
+                        : 0.5;
                   const d = plotlineRoutePath(route.points);
                   return (
                     <g
                       key={`${route.kind}:${route.from}:${route.to}:${index}`}
-                      className={hierarchy
-                        ? "text-slate-500 dark:text-slate-300"
-                        : "text-sky-600 dark:text-sky-300"}
+                      className={
+                        hierarchy
+                          ? "text-slate-500 transition-opacity duration-300 dark:text-slate-300"
+                          : "text-sky-600 transition-opacity duration-300 dark:text-sky-300"
+                      }
                       opacity={opacity}
                     >
                       <path
@@ -412,18 +621,124 @@ export function PlotlineObserver({
                     </g>
                   );
                 })}
+                {crossings.map(({ x, y }) => (
+                  <g key={`${x}:${y}`} aria-hidden="true">
+                    <path
+                      d={`M ${x - 5} ${y} H ${x + 5}`}
+                      stroke="var(--background)"
+                      strokeWidth={7}
+                    />
+                    <path
+                      d={`M ${x - 5} ${y} H ${x + 5}`}
+                      className="text-info"
+                      stroke="currentColor"
+                      strokeWidth={2}
+                    />
+                  </g>
+                ))}
+                {segments.map((segment) => (
+                  <path
+                    key={`${segment.from.x}:${segment.from.y}:${segment.to.x}:${segment.to.y}`}
+                    d={plotlineRoutePath([segment.from, segment.to])}
+                    fill="none"
+                    stroke="transparent"
+                    strokeWidth={16}
+                    className="pointer-events-auto cursor-pointer"
+                    role="img"
+                    tabIndex={0}
+                    aria-label={`Dependency connecting ${segment.edges
+                      .filter((edge) => edge.kind === "dependency")
+                      .map(
+                        (edge) =>
+                          `${titles.get(edge.from) ?? edge.from} to ${titles.get(edge.to) ?? edge.to}`,
+                      )
+                      .join(", ")}`}
+                    onPointerEnter={(event) => {
+                      if (event.pointerType !== "touch") setHighlighted(segment);
+                    }}
+                    onPointerLeave={(event) => {
+                      if (event.pointerType !== "touch") setHighlighted(null);
+                    }}
+                    onFocus={() => setHighlighted(segment)}
+                    onBlur={() => setHighlighted(null)}
+                    onPointerDown={(event) => {
+                      if (event.pointerType !== "touch") return;
+                      event.stopPropagation();
+                      if (touchTimer.current) clearTimeout(touchTimer.current);
+                      touchTimer.current = setTimeout(() => setHighlighted(segment), 500);
+                    }}
+                    onPointerUp={(event) => {
+                      if (event.pointerType !== "touch") return;
+                      if (touchTimer.current) clearTimeout(touchTimer.current);
+                      touchTimer.current = setTimeout(() => setHighlighted(null), 2000);
+                    }}
+                    onPointerCancel={() => {
+                      if (touchTimer.current) clearTimeout(touchTimer.current);
+                      setHighlighted(null);
+                    }}
+                  />
+                ))}
               </svg>
-              {graph.positions.map(({ node, x, y }) => (
+              {graph.positions.map(({ node, x, y, height }) => (
                 <div
                   key={node.id}
                   className="absolute"
-                  style={{ left: x, top: y, width: OBSERVER_NODE_WIDTH, height: OBSERVER_NODE_HEIGHT }}
+                  style={{
+                    left: x,
+                    top: y,
+                    width: OBSERVER_NODE_WIDTH,
+                    height:
+                      groupParents.has(node.id) && !expandedGroups.has(node.id)
+                        ? (height ?? OBSERVER_NODE_HEIGHT)
+                        : OBSERVER_NODE_HEIGHT,
+                  }}
                 >
                   <ObservedNodeCard
                     node={node}
                     selected={selected?.id === node.id}
+                    highlighted={highlightedTasks.has(node.id)}
+                    expandable={groupParents.has(node.id)}
                     onSelect={() => setSelectedId(node.id)}
+                    unbound={!!plan && node.kind === "delegation"}
                   />
+                  {groupParents.has(node.id) ? (
+                    <button
+                      type="button"
+                      aria-expanded={expandedGroups.has(node.id)}
+                      aria-label={`${expandedGroups.has(node.id) ? "Collapse" : "Expand"} ${node.title}`}
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setExpandedGroups((current) => {
+                          const next = new Set(current);
+                          if (next.has(node.id)) next.delete(node.id);
+                          else next.add(node.id);
+                          return next;
+                        });
+                      }}
+                      className="absolute right-2 top-2 z-10 rounded p-1 hover:bg-muted"
+                    >
+                      {expandedGroups.has(node.id) ? (
+                        <ChevronDown className="size-3" />
+                      ) : (
+                        <ChevronRight className="size-3" />
+                      )}
+                    </button>
+                  ) : null}
+                  {groupParents.has(node.id) && !expandedGroups.has(node.id) ? (
+                    <div
+                      aria-label={`${childrenByParent.get(node.id)?.length ?? 0} subtasks`}
+                      className="absolute bottom-2 left-2.5 flex w-44 flex-wrap-reverse gap-px"
+                    >
+                      {childrenByParent.get(node.id)?.map((child) => (
+                        <span
+                          key={child.id}
+                          aria-label={`${child.title}: ${child.status}`}
+                          className={`size-2 rounded-full ${child.status === "completed" ? "bg-success" : child.status === "running" ? "bg-info" : ["failed", "interrupted"].includes(child.status) ? "bg-error" : child.status === "cancelled" ? "bg-warning" : "bg-muted-foreground"}`}
+                        />
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
               ))}
             </div>
@@ -441,7 +756,8 @@ export function PlotlineObserver({
               </div>
             ) : (
               <p className="text-xs text-muted-foreground">
-                Drag to pan across the graph; select a node to inspect it. Solid lines indicate ownership; dashed lines indicate plan dependencies.
+                Drag to pan across the graph; select a node to inspect it. Solid lines indicate
+                ownership; dashed lines indicate plan dependencies.
               </p>
             )}
           </footer>

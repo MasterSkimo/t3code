@@ -22,8 +22,19 @@ export interface ObservedPosition {
   readonly node: ObservedTask;
   readonly x: number;
   readonly y: number;
+  readonly width?: number;
+  readonly height?: number;
 }
 
+/** Return the compact/expanded live view without changing the observed plan. */
+export function visiblePlotlineTasks(
+  nodes: readonly ObservedTask[],
+  expandedParents: ReadonlySet<string>,
+): readonly ObservedTask[] {
+  return nodes.filter(
+    (node) => !node.isSubtask || node.parentId === null || expandedParents.has(node.parentId),
+  );
+}
 
 /**
  * Overlay advisory plan nodes on native T3 execution. A native status is used
@@ -33,7 +44,10 @@ export interface ObservedPosition {
 export function projectDynamicPlan(
   plan: PlotlinePlan,
   projection: Pick<OrchestrationV2ThreadProjection, "thread" | "runs" | "subagents"> | null,
-): { readonly nodes: readonly ObservedTask[]; readonly dependencies: readonly { from: string; to: string }[] } {
+): {
+  readonly nodes: readonly ObservedTask[];
+  readonly dependencies: readonly { from: string; to: string }[];
+} {
   const observed = projectExecutionGraph(projection);
   const root: ObservedTask = observed[0] ?? {
     id: `plan-root:${plan.rootThreadId}`,
@@ -65,12 +79,14 @@ export function projectDynamicPlan(
   const taskKey = (id: string) => `plan:${id}`;
   // An earlier native retry remains an attempt of the same planned task.
   // Do not render its historical delegate as a new, unplanned DAG node.
-  const byNativeId = new Map(plan.tasks.flatMap((task) =>
-    [
-      ...(task.boundTaskId === null ? [] : [task.boundTaskId]),
-      ...(task.bindingHistory ?? []).map((attempt) => attempt.delegatedTaskId),
-    ].map((nativeId) => [nativeId, taskKey(task.id)] as const),
-  ));
+  const byNativeId = new Map(
+    plan.tasks.flatMap((task) =>
+      [
+        ...(task.boundTaskId === null ? [] : [task.boundTaskId]),
+        ...(task.bindingHistory ?? []).map((attempt) => attempt.delegatedTaskId),
+      ].map((nativeId) => [nativeId, taskKey(task.id)] as const),
+    ),
+  );
   const tasks: ObservedTask[] = plan.tasks.map((task) => {
     const execution = task.boundTaskId === null ? undefined : native.get(task.boundTaskId);
     return {
@@ -82,16 +98,24 @@ export function projectDynamicPlan(
       // An unbound completion is a plan assertion, not a native execution.
       // Bound tasks always display the native T3 delegation status.
       status: execution?.status ?? (task.boundTaskId === null ? task.planState : "planned"),
-      provider: execution?.provider ??
-        (task.createdByThreadId === plan.rootThreadId ? "Planned by orchestrator" : "Discovered by worker"),
-      detail: [
-        task.detail,
-        task.reason ? `Plan reason: ${task.reason}` : "",
-        task.boundTaskId === null && task.planState === "completed"
-          ? "Completed in plan by agent (no native T3 execution)" : "",
-        (task.bindingHistory?.length ?? 0) > 0
-          ? `Previous native attempts: ${task.bindingHistory!.length}` : "",
-      ].filter(Boolean).join("\n") || "Awaiting delegation",
+      provider:
+        execution?.provider ??
+        (task.createdByThreadId === plan.rootThreadId
+          ? "Planned by orchestrator"
+          : "Discovered by worker"),
+      detail:
+        [
+          task.detail,
+          task.reason ? `Plan reason: ${task.reason}` : "",
+          task.boundTaskId === null && task.planState === "completed"
+            ? "Completed in plan by agent (no native T3 execution)"
+            : "",
+          (task.bindingHistory?.length ?? 0) > 0
+            ? `Previous native attempts: ${task.bindingHistory!.length}`
+            : "",
+        ]
+          .filter(Boolean)
+          .join("\n") || "Awaiting delegation",
       result: execution?.result ?? task.reason,
     };
   });
@@ -99,8 +123,11 @@ export function projectDynamicPlan(
     .filter((node) => !byNativeId.has(node.id))
     .map((node) => ({
       ...node,
-      parentId: node.parentId === null ? root.id :
-        (byNativeId.get(node.parentId) ?? (native.has(node.parentId) ? node.parentId : root.id)),
+      parentId:
+        node.parentId === null
+          ? root.id
+          : (byNativeId.get(node.parentId) ??
+            (native.has(node.parentId) ? node.parentId : root.id)),
     }));
   const dependencies = plan.tasks.flatMap((task) =>
     task.dependsOn.map((id) => ({ from: taskKey(id), to: taskKey(task.id) })),
@@ -112,22 +139,24 @@ export function projectDynamicPlan(
 export function summarizePlanProgress(nodes: readonly ObservedTask[]) {
   const planTasks = nodes.filter((node) => node.kind === "plan");
   const completed = planTasks.filter((node) => node.status === "completed").length;
-  const failures = planTasks.filter((node) => ["failed", "interrupted"].includes(node.status)).length;
-  const outstanding = planTasks.filter((node) =>
-    !["completed", "skipped", "cancelled", "failed", "interrupted"].includes(node.status),
+  const failures = planTasks.filter((node) =>
+    ["failed", "interrupted"].includes(node.status),
+  ).length;
+  const outstanding = planTasks.filter(
+    (node) => !["completed", "skipped", "cancelled", "failed", "interrupted"].includes(node.status),
   ).length;
   return {
     total: planTasks.length,
     completed,
     outstanding,
-    status: failures > 0 ? "failed" : outstanding === 0 && planTasks.length > 0 ? "completed" : "open",
+    status:
+      failures > 0 ? "failed" : outstanding === 0 && planTasks.length > 0 ? "completed" : "open",
   } as const;
 }
 
 export const OBSERVER_NODE_WIDTH = 216;
 export const OBSERVER_NODE_HEIGHT = 106;
 // Leave gutters between branches for routed dependencies, and row gaps for bends.
-
 
 /** Only the latest run and children actually linked to it are included. */
 export function projectExecutionGraph(

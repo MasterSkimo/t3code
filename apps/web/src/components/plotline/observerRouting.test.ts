@@ -8,18 +8,22 @@ import {
 } from "./observerModel";
 import {
   plotlineRoutePath,
+  groupPlotlineRouteSegments,
+  plotlineCrossings,
   routeCrossesCards,
   routePlotlineEdges,
 } from "./observerRouting";
 
-const node = (
-  id: string,
-  parentId: string | null,
-  isSubtask = false,
-): ObservedTask => ({
-  id, parentId, isSubtask,
-  title: id, kind: parentId === null ? "run" : "plan",
-  status: "completed", provider: null, detail: "", result: null,
+const node = (id: string, parentId: string | null, isSubtask = false): ObservedTask => ({
+  id,
+  parentId,
+  isSubtask,
+  title: id,
+  kind: parentId === null ? "run" : "plan",
+  status: "completed",
+  provider: null,
+  detail: "",
+  result: null,
 });
 
 describe("Plotline live and PNG routing", () => {
@@ -30,8 +34,9 @@ describe("Plotline live and PNG routing", () => {
     const routes = routePlotlineEdges(graph.positions, graph.edges, dependencies);
 
     expect(routes).toHaveLength(3);
-    expect(routes.filter((route) => route.kind === "dependency"))
-      .toEqual([expect.objectContaining({ from: "A", to: "B" })]);
+    expect(routes.filter((route) => route.kind === "dependency")).toEqual([
+      expect.objectContaining({ from: "A", to: "B" }),
+    ]);
     expect(routes).not.toContainEqual(expect.objectContaining({ from: "A1", to: "B" }));
     for (const route of routes) {
       expect(routeCrossesCards(route.points, graph.positions, route.from, route.to)).toBe(false);
@@ -42,9 +47,15 @@ describe("Plotline live and PNG routing", () => {
   it("preserves branch lanes through three parallel streams", () => {
     const nodes = [
       node("root", null),
-      node("A", "root"), node("B", "root"), node("C", "root"),
-      node("A1", "A", true), node("B1", "B", true), node("C1", "C", true),
-      node("A2", "A1", true), node("B2", "B1", true), node("C2", "C1", true),
+      node("A", "root"),
+      node("B", "root"),
+      node("C", "root"),
+      node("A1", "A", true),
+      node("B1", "B", true),
+      node("C1", "C", true),
+      node("A2", "A1", true),
+      node("B2", "B1", true),
+      node("C2", "C1", true),
       node("summary", "root"),
     ];
     const dependencies = [
@@ -54,7 +65,14 @@ describe("Plotline live and PNG routing", () => {
     ];
     const graph = layoutExecutionGraph(nodes, dependencies);
     const byId = new Map(graph.positions.map((entry) => [entry.node.id, entry]));
-    for (const [parent, child] of [["A", "A1"], ["B", "B1"], ["C", "C1"], ["A1", "A2"], ["B1", "B2"], ["C1", "C2"]]) {
+    for (const [parent, child] of [
+      ["A", "A1"],
+      ["B", "B1"],
+      ["C", "C1"],
+      ["A1", "A2"],
+      ["B1", "B2"],
+      ["C1", "C2"],
+    ] as const) {
       expect(byId.get(parent)?.y).toBe(byId.get(child)?.y);
       expect(byId.get(child)!.x).toBeGreaterThan(byId.get(parent)!.x);
     }
@@ -73,17 +91,26 @@ describe("Plotline live and PNG routing", () => {
   it("expands a 21-node festival DAG into horizontal review lanes", () => {
     const nodes = [
       node("root", null),
-      node("attendance", "root"), node("capacity", "root"), node("energy", "root"),
-      node("attendance-1", "attendance", true), node("capacity-1", "capacity", true),
+      node("attendance", "root"),
+      node("capacity", "root"),
+      node("energy", "root"),
+      node("attendance-1", "attendance", true),
+      node("capacity-1", "capacity", true),
       node("energy-1", "energy", true),
-      node("attendance-2", "attendance", true), node("capacity-2", "capacity", true),
+      node("attendance-2", "attendance", true),
+      node("capacity-2", "capacity", true),
       node("energy-2", "energy", true),
-      node("attendance-3", "attendance", true), node("capacity-3", "capacity", true),
+      node("attendance-3", "attendance", true),
+      node("capacity-3", "capacity", true),
       node("energy-3", "energy", true),
-      node("budget", "root"), node("logistics", "root"),
-      node("integration", "root"), node("resolution", "root"),
-      node("resolution-1", "resolution", true), node("summary", "root"),
-      node("verification", "root"), node("verification-1", "verification", true),
+      node("budget", "root"),
+      node("logistics", "root"),
+      node("integration", "root"),
+      node("resolution", "root"),
+      node("resolution-1", "resolution", true),
+      node("summary", "root"),
+      node("verification", "root"),
+      node("verification-1", "verification", true),
     ];
     const dependencies = [
       { from: "attendance", to: "budget" },
@@ -99,11 +126,16 @@ describe("Plotline live and PNG routing", () => {
     const graph = layoutExecutionGraph(nodes, dependencies);
     const byId = new Map(graph.positions.map((position) => [position.node.id, position]));
     const initialBranches = ["attendance", "capacity", "energy"].map((id) => byId.get(id)!);
-    const stageRoots = ["budget", "logistics", "integration", "resolution", "summary", "verification"]
-      .map((id) => byId.get(id)!);
+    const stageRoots = [
+      "budget",
+      "logistics",
+      "integration",
+      "resolution",
+      "summary",
+      "verification",
+    ].map((id) => byId.get(id)!);
     const furthestBranch = Math.max(...initialBranches.map((position) => position.x));
-    expect(Math.min(...stageRoots.map((position) => position.x)))
-      .toBeGreaterThan(furthestBranch);
+    expect(Math.min(...stageRoots.map((position) => position.x))).toBeGreaterThan(furthestBranch);
     expect(new Set(stageRoots.map((position) => position.x)).size).toBeGreaterThanOrEqual(3);
     expect(graph.width).toBeGreaterThan(1_800);
     // The last six stages should occupy multiple columns, not six stacked rows.
@@ -119,8 +151,11 @@ describe("Plotline live and PNG routing", () => {
 
   it("places sibling subtasks on the same workstream row, extending its width", () => {
     const nodes = [
-      node("root", null), node("A", "root"),
-      node("A1", "A", true), node("A2", "A", true), node("A3", "A", true),
+      node("root", null),
+      node("A", "root"),
+      node("A1", "A", true),
+      node("A2", "A", true),
+      node("A3", "A", true),
       node("B", "root"),
     ];
     const dependencies = [{ from: "A", to: "B" }];
@@ -128,7 +163,12 @@ describe("Plotline live and PNG routing", () => {
     const byId = new Map(graph.positions.map((item) => [item.node.id, item]));
     const chain = ["A", "A1", "A2", "A3"].map((id) => byId.get(id)!);
     expect(new Set(chain.map((item) => item.y)).size).toBe(1);
-    expect(chain.map((item) => item.y)).toEqual([chain[0]!.y, chain[0]!.y, chain[0]!.y, chain[0]!.y]);
+    expect(chain.map((item) => item.y)).toEqual([
+      chain[0]!.y,
+      chain[0]!.y,
+      chain[0]!.y,
+      chain[0]!.y,
+    ]);
     for (let index = 1; index < chain.length; index++) {
       expect(chain[index]!.x).toBeGreaterThan(chain[index - 1]!.x);
     }
@@ -137,8 +177,11 @@ describe("Plotline live and PNG routing", () => {
 
   it("does not connect unrelated cards through a large vertical gap", () => {
     const nodes = [
-      node("root", null), node("A", "root"), node("other", "root"),
-      node("otherChild", "other", true), node("deep", "A", true),
+      node("root", null),
+      node("A", "root"),
+      node("other", "root"),
+      node("otherChild", "other", true),
+      node("deep", "A", true),
     ];
     const dependencies = [{ from: "otherChild", to: "deep" }];
     const graph = layoutExecutionGraph(nodes, dependencies);
@@ -164,8 +207,87 @@ describe("Plotline live and PNG routing", () => {
       ["hierarchy", "A", "A1"],
       ["dependency", "A", "B"],
     ]);
-    expect(routes[1]?.points.some((point) => point.x > 70 + OBSERVER_NODE_WIDTH))
-      .toBe(true);
+    expect(routes[1]?.points.some((point) => point.x > 70 + OBSERVER_NODE_WIDTH)).toBe(true);
     expect(routeCrossesCards(routes[1]!.points, positions, "A", "B")).toBe(false);
+  });
+
+  it("routes around a card deterministically without crossing it", () => {
+    const positions = [
+      { node: node("A", null), x: 0, y: 100 },
+      { node: node("obstacle", null), x: 250, y: 70 },
+      { node: node("B", null), x: 600, y: 100 },
+    ];
+    const edges = [{ from: "A", to: "B" }];
+    const first = routePlotlineEdges(positions, [], edges)[0]!;
+    const second = routePlotlineEdges(positions, [], edges)[0]!;
+    expect(first.points).toEqual(second.points);
+    expect(first.points[0]).toEqual({ x: OBSERVER_NODE_WIDTH, y: 100 + OBSERVER_NODE_HEIGHT / 2 });
+    expect(first.points.at(-1)).toEqual({ x: 600, y: 100 + OBSERVER_NODE_HEIGHT / 2 });
+    expect(routeCrossesCards(first.points, positions, "A", "B")).toBe(false);
+    expect(first.points.length).toBeGreaterThan(2);
+  });
+
+  it("retains every edge and endpoint on coincident shared route segments", () => {
+    const routes = [
+      {
+        from: "A",
+        to: "D",
+        kind: "dependency" as const,
+        points: [
+          { x: 0, y: 5 },
+          { x: 40, y: 5 },
+        ],
+      },
+      {
+        from: "B",
+        to: "D",
+        kind: "dependency" as const,
+        points: [
+          { x: 20, y: 0 },
+          { x: 20, y: 5 },
+          { x: 40, y: 5 },
+          { x: 40, y: 10 },
+        ],
+      },
+    ];
+    const segments = groupPlotlineRouteSegments(routes);
+    const shared = segments.find(
+      (segment) => segment.from.x === 20 && segment.to.x === 40 && segment.from.y === 5,
+    )!;
+    expect(shared.edges).toEqual([
+      { from: "A", to: "D", kind: "dependency" },
+      { from: "B", to: "D", kind: "dependency" },
+    ]);
+    expect(segments.flatMap((segment) => segment.edges)).toContainEqual({
+      from: "A",
+      to: "D",
+      kind: "dependency",
+    });
+    expect(segments.flatMap((segment) => segment.edges)).toContainEqual({
+      from: "B",
+      to: "D",
+      kind: "dependency",
+    });
+    const crossing = groupPlotlineRouteSegments([
+      {
+        from: "A",
+        to: "B",
+        kind: "dependency",
+        points: [
+          { x: 0, y: 5 },
+          { x: 20, y: 5 },
+        ],
+      },
+      {
+        from: "C",
+        to: "D",
+        kind: "dependency",
+        points: [
+          { x: 10, y: 0 },
+          { x: 10, y: 10 },
+        ],
+      },
+    ]);
+    expect(plotlineCrossings(crossing)).toEqual([{ x: 10, y: 5 }]);
   });
 });

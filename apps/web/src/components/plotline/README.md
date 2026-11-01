@@ -76,19 +76,14 @@ plan evolves independently of T3's run execution and native delegation metadata.
 T3 work. Execution state and model information come from native T3 subagent records, including
 older runs in the same conversation. Unbound native delegations remain visible.
 
-Plotline now uses a **left-to-right DAG**. The conversation sits in the first
-column; independent workstreams occupy distinct horizontal rows. Each task's
-discovered subtasks extend the **same row** to the right, expanding its branch.
-Integration, synthesis and verification are placed in later columns according
-to explicit prerequisites. This layout never turns visual adjacency into an
-A1 -> B dependency.
+The live plan groups direct subtasks inside their parent. Groups start compact with one status marker per subtask; expanding a group shows its subtasks and their dependencies. Root tasks and subtasks may depend only on siblings with the same parent. Plotline records these relationships without controlling execution.
 
 The right-panel Plotline tab includes a **Bottom** action. It opens Plotline
 inside a fork-owned tab of the existing bottom drawer; the native **Terminal**
 tab remains available without replacing terminal sessions. Resize the bottom
 panel by dragging its top edge. Both placements support mouse drag-to-pan,
 scrolling, node selection and PNG export. They share the same model, layout
-and connector routing, so the PNG always includes the full horizontal graph.
+and connector routing, and the PNG reflects the current expanded or compact state.
 
 Invalid dependencies, duplicate IDs, cycles and unrelated worker edits are
 rejected. The plan remains visible before any delegation, including tasks

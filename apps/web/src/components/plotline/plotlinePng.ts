@@ -1,10 +1,7 @@
 import type { ObservedTask } from "./observerModel";
-import { routePlotlineEdges } from "./observerRouting";
-import {
-  OBSERVER_NODE_HEIGHT,
-  OBSERVER_NODE_WIDTH,
-  type ObservedPosition,
-} from "./observerModel";
+import { routePlotlineEdges, type PlotlinePoint, type PlotlineRoute } from "./observerRouting";
+import type { ObserverGroupBounds } from "./observerGroupedLayout";
+import { OBSERVER_NODE_HEIGHT, OBSERVER_NODE_WIDTH, type ObservedPosition } from "./observerModel";
 
 /** Sample the actual Plotline surface so exports follow T3's light/dark setting. */
 export function isDarkPlotlineSurface(element: HTMLElement | null): boolean {
@@ -30,6 +27,11 @@ export interface PlotlinePngInput {
   readonly width: number;
   readonly height: number;
   readonly dark: boolean;
+  readonly routes?: readonly PlotlineRoute[];
+  readonly crossings?: readonly PlotlinePoint[];
+  readonly compactChildren?: ReadonlyMap<string, readonly ObservedTask[]>;
+  readonly groups?: readonly ObserverGroupBounds[] | undefined;
+  readonly unboundIds?: ReadonlySet<string>;
 }
 
 const MARGIN = 32;
@@ -58,14 +60,15 @@ export function pngCanvasSize(width: number, height: number) {
 
 /** Keep the download name portable across desktop and browser filesystems. */
 export function plotlinePngFilename(title: string, date: Date = new Date()): string {
-  const name = title
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 64)
-    .replace(/-+$/g, "") || "dag";
+  const name =
+    title
+      .normalize("NFKD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 64)
+      .replace(/-+$/g, "") || "dag";
   return `plotline-${name}-${date.toISOString().slice(0, 10)}.png`;
 }
 
@@ -85,26 +88,48 @@ interface Palette {
   readonly failure: string;
 }
 
-const palette = (dark: boolean): Palette => dark
-  ? {
-      background: "#090b0f", foreground: "#f1f5f9", muted: "#94a3b8",
-      card: "#151619", task: "#071820", subtask: "#1b132b",
-      taskBorder: "#0ea5e9", subtaskBorder: "#a855f7",
-      hierarchy: "#cbd5e1", dependency: "#7dd3fc", success: "#10b981",
-      warning: "#f59e0b", failure: "#fb7185",
-    }
-  : {
-      background: "#f8fafc", foreground: "#0f172a", muted: "#64748b",
-      card: "#ffffff", task: "#effaff", subtask: "#f6f0ff",
-      taskBorder: "#0284c7", subtaskBorder: "#9333ea",
-      hierarchy: "#475569", dependency: "#0369a1", success: "#059669",
-      warning: "#b45309", failure: "#e11d48",
-    };
+const palette = (dark: boolean): Palette =>
+  dark
+    ? {
+        background: "#090b0f",
+        foreground: "#f1f5f9",
+        muted: "#94a3b8",
+        card: "#151619",
+        task: "#071820",
+        subtask: "#1b132b",
+        taskBorder: "#0ea5e9",
+        subtaskBorder: "#a855f7",
+        hierarchy: "#cbd5e1",
+        dependency: "#7dd3fc",
+        success: "#10b981",
+        warning: "#f59e0b",
+        failure: "#fb7185",
+      }
+    : {
+        background: "#f8fafc",
+        foreground: "#0f172a",
+        muted: "#64748b",
+        card: "#ffffff",
+        task: "#effaff",
+        subtask: "#f6f0ff",
+        taskBorder: "#0284c7",
+        subtaskBorder: "#9333ea",
+        hierarchy: "#475569",
+        dependency: "#0369a1",
+        success: "#059669",
+        warning: "#b45309",
+        failure: "#e11d48",
+      };
 
 function drawRoundedCard(
   ctx: CanvasRenderingContext2D,
-  x: number, y: number, width: number, height: number,
-  radius: number, fill: string, stroke: string,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  radius: number,
+  fill: string,
+  stroke: string,
 ) {
   ctx.beginPath();
   ctx.roundRect(x, y, width, height, radius);
@@ -118,7 +143,8 @@ function drawRoundedCard(
 function clipText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number): string {
   if (ctx.measureText(text).width <= maxWidth) return text;
   let value = text;
-  while (value.length > 0 && ctx.measureText(`${value}…`).width > maxWidth) value = value.slice(0, -1);
+  while (value.length > 0 && ctx.measureText(`${value}…`).width > maxWidth)
+    value = value.slice(0, -1);
   return `${value}…`;
 }
 
@@ -144,18 +170,29 @@ function drawTwoLineTitle(
   if (current) lines.push(current);
   // A clipped two-line title keeps the exported cards at the same fixed height.
   for (let i = 0; i < Math.min(lines.length, 2); i++) {
-    const value = i === 1 && lines.length > 2
-      ? `${lines[i]}…` : lines[i]!;
+    const value = i === 1 && lines.length > 2 ? `${lines[i]}…` : lines[i]!;
     ctx.fillText(clipText(ctx, value, maxWidth), x, y + i * 17);
   }
 }
 
-function drawStatus(ctx: CanvasRenderingContext2D, node: ObservedTask, x: number, y: number, colors: Palette) {
+function drawStatus(
+  ctx: CanvasRenderingContext2D,
+  node: ObservedTask,
+  x: number,
+  y: number,
+  colors: Palette,
+) {
   const complete = node.status === "completed";
   const failed = node.status === "failed" || node.status === "interrupted";
-  const color = complete ? colors.success : failed ? colors.failure
-    : node.status === "running" ? colors.dependency
-      : node.status === "cancelled" ? colors.warning : colors.muted;
+  const color = complete
+    ? colors.success
+    : failed
+      ? colors.failure
+      : node.status === "running"
+        ? colors.dependency
+        : node.status === "cancelled"
+          ? colors.warning
+          : colors.muted;
   ctx.strokeStyle = color;
   ctx.lineWidth = 1.5;
   ctx.beginPath();
@@ -170,17 +207,30 @@ function drawStatus(ctx: CanvasRenderingContext2D, node: ObservedTask, x: number
   }
 }
 
-function drawNode(ctx: CanvasRenderingContext2D, position: ObservedPosition, colors: Palette) {
+function drawNode(
+  ctx: CanvasRenderingContext2D,
+  position: ObservedPosition,
+  colors: Palette,
+  children: readonly ObservedTask[] = [],
+  unbound = false,
+) {
   const node = position.node;
   const subtask = node.kind === "plan" && node.isSubtask === true;
   const x = position.x + (subtask ? 10 : 0);
   const width = OBSERVER_NODE_WIDTH - (subtask ? 20 : 0);
   const y = position.y;
-  const height = OBSERVER_NODE_HEIGHT;
+  const height = children.length ? (position.height ?? OBSERVER_NODE_HEIGHT) : OBSERVER_NODE_HEIGHT;
   const fill = subtask ? colors.subtask : node.kind === "plan" ? colors.task : colors.card;
-  const stroke = subtask ? colors.subtaskBorder
-    : node.kind === "plan" ? colors.taskBorder : colors.muted;
+  const stroke = subtask
+    ? colors.subtaskBorder
+    : node.kind === "plan"
+      ? colors.taskBorder
+      : unbound
+        ? colors.subtaskBorder
+        : colors.muted;
+  if (unbound) ctx.setLineDash([4, 3]);
   drawRoundedCard(ctx, x, y, width, height, subtask ? 8 : 12, fill, stroke);
+  if (unbound) ctx.setLineDash([]);
   if (subtask) {
     ctx.fillStyle = colors.subtaskBorder;
     ctx.fillRect(x + 1, y + 10, 3, height - 20);
@@ -189,16 +239,29 @@ function drawNode(ctx: CanvasRenderingContext2D, position: ObservedPosition, col
   ctx.textBaseline = "alphabetic";
   ctx.font = "600 10px Inter, system-ui, sans-serif";
   ctx.fillStyle = subtask ? colors.subtaskBorder : colors.muted;
-  const label = node.kind === "run" ? "CONVERSATION" :
-    subtask ? "SUB TASK" : node.kind === "plan" ? "TASK" : "SUBAGENT";
+  const label =
+    node.kind === "run"
+      ? "CONVERSATION"
+      : subtask
+        ? "SUB TASK"
+        : node.kind === "plan"
+          ? "TASK"
+          : unbound
+            ? "UNBOUND SUBAGENT"
+            : "SUBAGENT";
   ctx.fillText(label, x + 13, y + 22);
   // Preserve the native status text alongside its icon in the downloaded image.
   const statusWidth = ctx.measureText(node.status).width;
   const statusX = x + width - 13 - statusWidth;
   drawStatus(ctx, node, statusX - 10, y + 18, colors);
-  ctx.fillStyle = node.status === "completed" ? colors.success
-    : node.status === "failed" || node.status === "interrupted" ? colors.failure
-      : node.status === "running" ? colors.dependency : colors.muted;
+  ctx.fillStyle =
+    node.status === "completed"
+      ? colors.success
+      : node.status === "failed" || node.status === "interrupted"
+        ? colors.failure
+        : node.status === "running"
+          ? colors.dependency
+          : colors.muted;
   ctx.fillText(node.status, statusX, y + 22);
 
   ctx.fillStyle = colors.foreground;
@@ -207,17 +270,34 @@ function drawNode(ctx: CanvasRenderingContext2D, position: ObservedPosition, col
 
   ctx.font = "10px Inter, system-ui, sans-serif";
   ctx.fillStyle = colors.muted;
-  ctx.fillText(clipText(ctx, node.provider ?? "Model unavailable", width - 26), x + 13, y + height - 13);
+  ctx.fillText(
+    clipText(ctx, node.provider ?? "Model unavailable", width - 26),
+    x + 13,
+    y + height - (children.length ? 30 + Math.max(0, Math.ceil(children.length / 19) - 1) * 9 : 13),
+  );
+  for (const [index, child] of children.entries()) {
+    const cx = x + 14 + (index % 19) * 9;
+    const cy = y + height - 12 - Math.floor(index / 19) * 9;
+    ctx.fillStyle =
+      child.status === "completed"
+        ? colors.success
+        : child.status === "running"
+          ? colors.dependency
+          : ["failed", "interrupted"].includes(child.status)
+            ? colors.failure
+            : child.status === "cancelled"
+              ? colors.warning
+              : colors.muted;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 4, 0, Math.PI * 2);
+    ctx.fill();
+  }
 }
 
-function drawConnections(
-  ctx: CanvasRenderingContext2D,
-  input: PlotlinePngInput,
-  colors: Palette,
-) {
+function drawConnections(ctx: CanvasRenderingContext2D, input: PlotlinePngInput, colors: Palette) {
   // Use exactly the live observer's obstacle-aware geometry. Never redraw
   // dependencies as straight lines through cards in the exported image.
-  const routes = routePlotlineEdges(input.nodes, input.edges, input.dependencies);
+  const routes = input.routes ?? routePlotlineEdges(input.nodes, input.edges, input.dependencies);
   ctx.lineJoin = "round";
   ctx.lineCap = "round";
   for (const route of routes) {
@@ -245,6 +325,19 @@ function drawConnections(
     ctx.lineTo(tip.x - dx * 8 + dy * 4, tip.y - dy * 8 - dx * 4);
     ctx.stroke();
   }
+  for (const { x, y } of input.crossings ?? []) {
+    for (const [color, width] of [
+      [colors.background, 7],
+      [colors.dependency, 2],
+    ] as const) {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = width;
+      ctx.beginPath();
+      ctx.moveTo(x - 5, y);
+      ctx.lineTo(x + 5, y);
+      ctx.stroke();
+    }
+  }
 }
 
 /** Offscreen Canvas2D avoids viewport clipping and SVG foreignObject restrictions. */
@@ -264,15 +357,51 @@ export function renderPlotlinePng(input: PlotlinePngInput): HTMLCanvasElement {
 
   ctx.fillStyle = colors.foreground;
   ctx.font = "700 20px Inter, system-ui, sans-serif";
-  ctx.fillText(clipText(ctx, input.title || "Plotline DAG", width - 2 * MARGIN), MARGIN, MARGIN + 18);
+  ctx.fillText(
+    clipText(ctx, input.title || "Plotline DAG", width - 2 * MARGIN),
+    MARGIN,
+    MARGIN + 18,
+  );
   ctx.font = "11px Inter, system-ui, sans-serif";
   ctx.fillStyle = colors.muted;
-  ctx.fillText(`Plotline · ${input.nodes.length} nodes · ${input.dependencies.length} dependencies`, MARGIN, MARGIN + 40);
+  ctx.fillText(
+    `Plotline · ${input.nodes.length} nodes · ${input.dependencies.length} dependencies`,
+    MARGIN,
+    MARGIN + 40,
+  );
+  if (input.routes?.some((route) => route.unroutable)) {
+    ctx.fillStyle = colors.failure;
+    ctx.fillText(
+      "Some connections could not be drawn without crossing tasks.",
+      MARGIN,
+      MARGIN + 58,
+    );
+  }
 
   ctx.save();
   ctx.translate(MARGIN, MARGIN + HEADER_HEIGHT);
+  for (const group of input.groups ?? []) {
+    if (group.expanded && group.childIds.length > 0)
+      drawRoundedCard(
+        ctx,
+        group.x,
+        group.y,
+        group.width,
+        group.height,
+        12,
+        colors.background,
+        colors.taskBorder,
+      );
+  }
   drawConnections(ctx, input, colors);
-  for (const position of input.nodes) drawNode(ctx, position, colors);
+  for (const position of input.nodes)
+    drawNode(
+      ctx,
+      position,
+      colors,
+      input.compactChildren?.get(position.node.id),
+      input.unboundIds?.has(position.node.id),
+    );
   ctx.restore();
   return canvas;
 }

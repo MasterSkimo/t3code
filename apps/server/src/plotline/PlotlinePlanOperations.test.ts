@@ -24,119 +24,430 @@ const create = {
 };
 
 describe("dynamic Plotline planning", () => {
+  it("allows sibling prerequisites and rejects cross-parent and parent-child dependencies", () => {
+    const plan = evolvePlan(
+      null,
+      {
+        ...create,
+        input: {
+          ...create.input,
+          tasks: [
+            { id: "A", title: "Parent A" },
+            { id: "B", title: "Parent B" },
+            { id: "A1", title: "A child 1", parentTaskId: "A" },
+            { id: "A2", title: "A child 2", parentTaskId: "A", dependsOn: ["A1"] },
+            { id: "B1", title: "B child", parentTaskId: "B" },
+            { id: "R1", title: "Root 1" },
+            { id: "R2", title: "Root 2", dependsOn: ["R1"] },
+          ],
+        },
+      },
+      now,
+    );
+    assert.equal(plan.revision, 1);
+    assert.throws(
+      () =>
+        evolvePlan(
+          null,
+          {
+            ...create,
+            input: {
+              ...create.input,
+              tasks: [
+                { id: "A", title: "A" },
+                { id: "B", title: "B" },
+                { id: "A1", title: "A1", parentTaskId: "A", dependsOn: ["B"] },
+              ],
+            },
+          },
+          now,
+        ),
+      /A1.*B.*same parent/i,
+    );
+    for (const [taskId, prerequisite] of [
+      ["A1", "B1"],
+      ["A1", "A"],
+      ["A", "A1"],
+    ]) {
+      assert.throws(
+        () =>
+          evolvePlan(
+            plan,
+            {
+              kind: "update",
+              rootThreadId: root,
+              actorThreadId: creator,
+              input: {
+                requestId: `invalid-${taskId}-${prerequisite}`,
+                taskId,
+                dependsOn: [prerequisite],
+              },
+            },
+            now,
+          ),
+        new RegExp(`${taskId}.*${prerequisite}.*same parent`, "i"),
+      );
+    }
+  });
+
   it("initializes a DAG, rejects dependency cycles and never starts any run", () => {
     const plan = evolvePlan(null, create, now);
     assert.equal(plan.revision, 1);
     assert.deepStrictEqual(plan.tasks[2]?.dependsOn, ["A", "B"]);
-    assert.throws(() => evolvePlan(plan, {
-      kind: "update", rootThreadId: root, actorThreadId: creator,
-      input: { requestId: "cycle", taskId: "A", dependsOn: ["D"] },
-    }, now), /cycle/);
+    assert.throws(
+      () =>
+        evolvePlan(
+          plan,
+          {
+            kind: "update",
+            rootThreadId: root,
+            actorThreadId: creator,
+            input: { requestId: "cycle", taskId: "A", dependsOn: ["D"] },
+          },
+          now,
+        ),
+      /cycle/,
+    );
     // A repeated create is a no-op, even when the original tool response was lost.
     assert.strictEqual(evolvePlan(plan, create, now), plan);
-    assert.throws(() => evolvePlan(plan, {
-      ...create, input: { ...create.input, title: "Conflicting plan" },
-    }, now), /different tasks/);
+    assert.throws(
+      () =>
+        evolvePlan(
+          plan,
+          {
+            ...create,
+            input: { ...create.input, title: "Conflicting plan" },
+          },
+          now,
+        ),
+      /different tasks/,
+    );
   });
 
   it("lets assigned workers discover tasks but prevents cross-worker edits", () => {
     const initial = evolvePlan(null, create, now);
-    const assigned = evolvePlan(initial, {
-      kind: "bind", rootThreadId: root, actorThreadId: root,
-      input: { requestId: "bind", taskId: "A", delegatedTaskId: "node-native-A", childThreadId: "child-A" },
-    }, now);
-    const updated = evolvePlan(assigned, {
-      kind: "add", rootThreadId: root, actorThreadId: "child-A",
-      input: {
-        requestId: "discovery",
-        task: { id: "A1", title: "Investigate migration", parentTaskId: "A", dependsOn: ["A"] },
+    const assigned = evolvePlan(
+      initial,
+      {
+        kind: "bind",
+        rootThreadId: root,
+        actorThreadId: root,
+        input: {
+          requestId: "bind",
+          taskId: "A",
+          delegatedTaskId: "node-native-A",
+          childThreadId: "child-A",
+        },
       },
-    }, now);
+      now,
+    );
+    const updated = evolvePlan(
+      assigned,
+      {
+        kind: "add",
+        rootThreadId: root,
+        actorThreadId: "child-A",
+        input: {
+          requestId: "discovery",
+          task: { id: "A1", title: "Investigate migration", parentTaskId: "A" },
+        },
+      },
+      now,
+    );
     assert.equal(updated.tasks[3]?.createdByThreadId, "child-A");
-    const nestedBound = evolvePlan(updated, {
-      kind: "bind", rootThreadId: root, actorThreadId: "child-A",
-      input: { requestId: "bind-A1", taskId: "A1", delegatedTaskId: "node-native-A1", childThreadId: "child-A1" },
-    }, now);
+    const nestedBound = evolvePlan(
+      updated,
+      {
+        kind: "bind",
+        rootThreadId: root,
+        actorThreadId: "child-A",
+        input: {
+          requestId: "bind-A1",
+          taskId: "A1",
+          delegatedTaskId: "node-native-A1",
+          childThreadId: "child-A1",
+        },
+      },
+      now,
+    );
     assert.equal(nestedBound.tasks[3]?.boundTaskId, "node-native-A1");
     // Retries reuse the planned task once the previous native attempt settled.
-    assert.throws(() => evolvePlan(assigned, {
-      kind: "bind", rootThreadId: root, actorThreadId: root,
-      input: { requestId: "retry-running", taskId: "A", delegatedTaskId: "node-native-A2", childThreadId: "child-A2" },
-    }, now), /must be terminal/);
-    const retried = evolvePlan(assigned, {
-      kind: "bind", rootThreadId: root, actorThreadId: root,
-      previousDelegationTerminal: true,
-      input: { requestId: "retry-finished", taskId: "A", delegatedTaskId: "node-native-A2", childThreadId: "child-A2" },
-    }, now);
+    assert.throws(
+      () =>
+        evolvePlan(
+          assigned,
+          {
+            kind: "bind",
+            rootThreadId: root,
+            actorThreadId: root,
+            input: {
+              requestId: "retry-running",
+              taskId: "A",
+              delegatedTaskId: "node-native-A2",
+              childThreadId: "child-A2",
+            },
+          },
+          now,
+        ),
+      /must be terminal/,
+    );
+    const retried = evolvePlan(
+      assigned,
+      {
+        kind: "bind",
+        rootThreadId: root,
+        actorThreadId: root,
+        previousDelegationTerminal: true,
+        input: {
+          requestId: "retry-finished",
+          taskId: "A",
+          delegatedTaskId: "node-native-A2",
+          childThreadId: "child-A2",
+        },
+      },
+      now,
+    );
     assert.equal(retried.tasks.length, assigned.tasks.length);
     assert.equal(retried.tasks[0]?.boundThreadId, "child-A2");
     assert.deepStrictEqual(retried.tasks[0]?.bindingHistory, [
       { delegatedTaskId: "node-native-A", childThreadId: "child-A" },
     ]);
-    const sameAttempt = evolvePlan(retried, {
-      kind: "bind", rootThreadId: root, actorThreadId: root,
-      input: { requestId: "retry-replay", taskId: "A", delegatedTaskId: "node-native-A2", childThreadId: "child-A2" },
-    }, now);
+    const sameAttempt = evolvePlan(
+      retried,
+      {
+        kind: "bind",
+        rootThreadId: root,
+        actorThreadId: root,
+        input: {
+          requestId: "retry-replay",
+          taskId: "A",
+          delegatedTaskId: "node-native-A2",
+          childThreadId: "child-A2",
+        },
+      },
+      now,
+    );
     assert.deepStrictEqual(sameAttempt.tasks[0]?.bindingHistory, retried.tasks[0]?.bindingHistory);
-    assert.throws(() => evolvePlan(updated, {
-      kind: "bind", rootThreadId: root, actorThreadId: "child-B",
-      input: { requestId: "bad-bind", taskId: "A1", delegatedTaskId: "foreign-node", childThreadId: "other" },
-    }, now), /only subtasks they created/);
-    assert.throws(() => evolvePlan(updated, {
-      kind: "update", rootThreadId: root, actorThreadId: "child-B",
-      input: { requestId: "foreign", taskId: "A1", title: "Unauthorized" },
-    }, now), /assigned tasks/);
-    assert.throws(() => evolvePlan(updated, {
-      kind: "add", rootThreadId: root, actorThreadId: "child-B",
-      input: { requestId: "foreign-add", task: { id: "B1", title: "Unauthorized", parentTaskId: "A" } },
-    }, now), /assigned task/);
+    assert.throws(
+      () =>
+        evolvePlan(
+          updated,
+          {
+            kind: "bind",
+            rootThreadId: root,
+            actorThreadId: "child-B",
+            input: {
+              requestId: "bad-bind",
+              taskId: "A1",
+              delegatedTaskId: "foreign-node",
+              childThreadId: "other",
+            },
+          },
+          now,
+        ),
+      /own or assigned tasks/,
+    );
+    assert.throws(
+      () =>
+        evolvePlan(
+          updated,
+          {
+            kind: "update",
+            rootThreadId: root,
+            actorThreadId: "child-B",
+            input: { requestId: "foreign", taskId: "A1", title: "Unauthorized" },
+          },
+          now,
+        ),
+      /assigned tasks/,
+    );
+    assert.throws(
+      () =>
+        evolvePlan(
+          updated,
+          {
+            kind: "add",
+            rootThreadId: root,
+            actorThreadId: "child-B",
+            input: {
+              requestId: "foreign-add",
+              task: { id: "B1", title: "Unauthorized", parentTaskId: "A" },
+            },
+          },
+          now,
+        ),
+      /assigned task/,
+    );
   });
 
   it("completes an unbound worker discovery but never overrides native execution", () => {
     const initial = evolvePlan(null, create, now);
-    const delegated = evolvePlan(initial, {
-      kind: "bind", rootThreadId: root, actorThreadId: root,
-      input: { requestId: "bind-A", taskId: "A", delegatedTaskId: "node-A", childThreadId: "child-A" },
-    }, now);
-    const discovered = evolvePlan(delegated, {
-      kind: "add", rootThreadId: root, actorThreadId: "child-A",
-      input: { requestId: "add-A1", task: { id: "A1", title: "Finish A1", parentTaskId: "A" } },
-    }, now);
-    const completed = evolvePlan(discovered, {
-      kind: "update", rootThreadId: root, actorThreadId: "child-A",
-      input: { requestId: "finish-A1", taskId: "A1", planState: "completed" },
-    }, now);
+    const delegated = evolvePlan(
+      initial,
+      {
+        kind: "bind",
+        rootThreadId: root,
+        actorThreadId: root,
+        input: {
+          requestId: "bind-A",
+          taskId: "A",
+          delegatedTaskId: "node-A",
+          childThreadId: "child-A",
+        },
+      },
+      now,
+    );
+    const discovered = evolvePlan(
+      delegated,
+      {
+        kind: "add",
+        rootThreadId: root,
+        actorThreadId: "child-A",
+        input: { requestId: "add-A1", task: { id: "A1", title: "Finish A1", parentTaskId: "A" } },
+      },
+      now,
+    );
+    const completed = evolvePlan(
+      discovered,
+      {
+        kind: "update",
+        rootThreadId: root,
+        actorThreadId: "child-A",
+        input: { requestId: "finish-A1", taskId: "A1", planState: "completed" },
+      },
+      now,
+    );
     assert.equal(completed.tasks.find((task) => task.id === "A1")?.planState, "completed");
     assert.equal(completed.tasks.find((task) => task.id === "A")?.planState, "planned");
-    assert.throws(() => evolvePlan(completed, {
-      kind: "update", rootThreadId: root, actorThreadId: "child-A",
-      input: { requestId: "fake-native-completion", taskId: "A", planState: "completed" },
-    }, now), /native execution status/);
-    assert.throws(() => evolvePlan(completed, {
-      kind: "update", rootThreadId: root, actorThreadId: "child-B",
-      input: { requestId: "foreign-completion", taskId: "A1", planState: "completed" },
-    }, now), /assigned tasks/);
-    assert.throws(() => evolvePlan(completed, {
-      kind: "bind", rootThreadId: root, actorThreadId: root,
-      input: { requestId: "bind-settled", taskId: "A1", delegatedTaskId: "native-A1", childThreadId: "child-A1" },
-    }, now), /Reset a settled plan task/);
-    const reopened = evolvePlan(completed, {
-      kind: "update", rootThreadId: root, actorThreadId: root,
-      input: { requestId: "reopen-A1", taskId: "A1", planState: "planned" },
-    }, now);
+    assert.throws(
+      () =>
+        evolvePlan(
+          completed,
+          {
+            kind: "update",
+            rootThreadId: root,
+            actorThreadId: "child-A",
+            input: { requestId: "fake-native-completion", taskId: "A", planState: "completed" },
+          },
+          now,
+        ),
+      /native execution status/,
+    );
+    assert.throws(
+      () =>
+        evolvePlan(
+          completed,
+          {
+            kind: "update",
+            rootThreadId: root,
+            actorThreadId: "child-B",
+            input: { requestId: "foreign-completion", taskId: "A1", planState: "completed" },
+          },
+          now,
+        ),
+      /assigned tasks/,
+    );
+    assert.throws(
+      () =>
+        evolvePlan(
+          completed,
+          {
+            kind: "bind",
+            rootThreadId: root,
+            actorThreadId: root,
+            input: {
+              requestId: "bind-settled",
+              taskId: "A1",
+              delegatedTaskId: "native-A1",
+              childThreadId: "child-A1",
+            },
+          },
+          now,
+        ),
+      /Reset a settled plan task/,
+    );
+    const reopened = evolvePlan(
+      completed,
+      {
+        kind: "update",
+        rootThreadId: root,
+        actorThreadId: root,
+        input: { requestId: "reopen-A1", taskId: "A1", planState: "planned" },
+      },
+      now,
+    );
     assert.equal(reopened.tasks.find((task) => task.id === "A1")?.planState, "planned");
-    assert.equal(evolvePlan(reopened, {
-      kind: "bind", rootThreadId: root, actorThreadId: root,
-      input: { requestId: "bind-reopened", taskId: "A1", delegatedTaskId: "native-A1", childThreadId: "child-A1" },
-    }, now).tasks.find((task) => task.id === "A1")?.boundTaskId, "native-A1");
+    assert.equal(
+      evolvePlan(
+        reopened,
+        {
+          kind: "bind",
+          rootThreadId: root,
+          actorThreadId: root,
+          input: {
+            requestId: "bind-reopened",
+            taskId: "A1",
+            delegatedTaskId: "native-A1",
+            childThreadId: "child-A1",
+          },
+        },
+        now,
+      ).tasks.find((task) => task.id === "A1")?.boundTaskId,
+      "native-A1",
+    );
   });
+
+  it("rejects cross-parent add and update without changing plan or revision", () =>
+    Effect.gen(function* () {
+      const store = yield* Store.PlotlineStore;
+      yield* store.mutatePlan({
+        ...create,
+        input: {
+          ...create.input,
+          tasks: [
+            { id: "A", title: "Parent A" },
+            { id: "B", title: "Parent B" },
+            { id: "A1", title: "A child", parentTaskId: "A" },
+            { id: "B1", title: "B child", parentTaskId: "B" },
+          ],
+        },
+      });
+      const before = yield* store.getPlan(root);
+      const add = yield* Effect.either(
+        store.mutatePlan({
+          kind: "add",
+          rootThreadId: root,
+          actorThreadId: root,
+          input: {
+            requestId: "cross-parent-add",
+            task: { id: "A2", title: "A sibling", parentTaskId: "A", dependsOn: ["B1"] },
+          },
+        }),
+      );
+      assert.equal(add._tag, "Left");
+      if (add._tag === "Left") assert.match(add.left.message, /A2.*B1.*same parent/i);
+      const update = yield* Effect.either(
+        store.mutatePlan({
+          kind: "update",
+          rootThreadId: root,
+          actorThreadId: root,
+          input: { requestId: "parent-child-update", taskId: "A1", dependsOn: ["A"] },
+        }),
+      );
+      assert.equal(update._tag, "Left");
+      if (update._tag === "Left") assert.match(update.left.message, /A1.*A.*same parent/i);
+      assert.deepStrictEqual(yield* store.getPlan(root), before);
+      assert.equal((yield* store.getPlan(root))?.revision, 1);
+    }).pipe(Effect.provide(Store.layerMemory)));
 
   it("persists manual completion and deduplicates a retry without a second revision", () =>
     Effect.gen(function* () {
       const store = yield* Store.PlotlineStore;
       yield* store.mutatePlan(create);
       const completion = {
-        kind: "update" as const, rootThreadId: root, actorThreadId: root,
+        kind: "update" as const,
+        rootThreadId: root,
+        actorThreadId: root,
         input: { requestId: "complete-D", taskId: "D", planState: "completed" as const },
       };
       const first = yield* store.mutatePlan(completion);
@@ -146,8 +457,7 @@ describe("dynamic Plotline planning", () => {
       assert.equal(replay.updated, false);
       const persisted = yield* store.getPlan(root);
       assert.equal(persisted?.tasks.find((task) => task.id === "D")?.planState, "completed");
-    }).pipe(Effect.provide(Store.layerMemory)),
-  );
+    }).pipe(Effect.provide(Store.layerMemory)));
 
   it("persists plan revisions and deduplicates a retried mutation", () =>
     Effect.gen(function* () {
@@ -159,28 +469,48 @@ describe("dynamic Plotline planning", () => {
       assert.equal(repeated.revision, 1);
       assert.equal(repeated.updated, false);
       const update = yield* store.mutatePlan({
-        kind: "update", rootThreadId: root, actorThreadId: root,
-        input: { requestId: "skip-D", taskId: "D", planState: "skipped", reason: "Analysis unnecessary" },
+        kind: "update",
+        rootThreadId: root,
+        actorThreadId: root,
+        input: {
+          requestId: "skip-D",
+          taskId: "D",
+          planState: "skipped",
+          reason: "Analysis unnecessary",
+        },
       });
       assert.equal(update.revision, 2);
       const plan = yield* store.getPlan(root);
       assert.equal(plan?.tasks.find((task) => task.id === "D")?.planState, "skipped");
       assert.equal(plan?.tasks.find((task) => task.id === "D")?.reason, "Analysis unnecessary");
-    }).pipe(Effect.provide(Store.layerMemory)),
-  );
+    }).pipe(Effect.provide(Store.layerMemory)));
 
   it("persists successive native attempts and replays the same request without duplicates", () =>
     Effect.gen(function* () {
       const store = yield* Store.PlotlineStore;
       yield* store.mutatePlan(create);
       const first = {
-        kind: "bind" as const, rootThreadId: root, actorThreadId: root,
-        input: { requestId: "native-A", taskId: "A", delegatedTaskId: "node-A", childThreadId: "child-A" },
+        kind: "bind" as const,
+        rootThreadId: root,
+        actorThreadId: root,
+        input: {
+          requestId: "native-A",
+          taskId: "A",
+          delegatedTaskId: "node-A",
+          childThreadId: "child-A",
+        },
       };
       const retry = {
-        kind: "bind" as const, rootThreadId: root, actorThreadId: root,
+        kind: "bind" as const,
+        rootThreadId: root,
+        actorThreadId: root,
         previousDelegationTerminal: true,
-        input: { requestId: "retry-native-A", taskId: "A", delegatedTaskId: "node-A2", childThreadId: "child-A2" },
+        input: {
+          requestId: "retry-native-A",
+          taskId: "A",
+          delegatedTaskId: "node-A2",
+          childThreadId: "child-A2",
+        },
       };
       yield* store.mutatePlan(first);
       const second = yield* store.mutatePlan(retry);
@@ -192,12 +522,27 @@ describe("dynamic Plotline planning", () => {
       assert.deepStrictEqual(stored?.tasks[0]?.bindingHistory, [
         { delegatedTaskId: "node-A", childThreadId: "child-A" },
       ]);
-      assert.throws(() => evolvePlan(stored!, {
-        kind: "bind", rootThreadId: root, actorThreadId: root, previousDelegationTerminal: true,
-        input: { requestId: "reuse-old", taskId: "B", delegatedTaskId: "node-A", childThreadId: "child-A" },
-      }, now), /another plan task/);
-    }).pipe(Effect.provide(Store.layerMemory)),
-  );
+      assert.throws(
+        () =>
+          evolvePlan(
+            stored!,
+            {
+              kind: "bind",
+              rootThreadId: root,
+              actorThreadId: root,
+              previousDelegationTerminal: true,
+              input: {
+                requestId: "reuse-old",
+                taskId: "B",
+                delegatedTaskId: "node-A",
+                childThreadId: "child-A",
+              },
+            },
+            now,
+          ),
+        /another plan task/,
+      );
+    }).pipe(Effect.provide(Store.layerMemory)));
 
   it("accepts a create without requestId and avoids duplicate revisions on retransmission", () =>
     Effect.gen(function* () {
@@ -212,37 +557,51 @@ describe("dynamic Plotline planning", () => {
       assert.equal(replay.updated, false);
       assert.equal(replay.revision, 1);
       const alternateId = yield* store.mutatePlan({
-        ...create, input: { ...create.input, requestId: "different-request-id" },
+        ...create,
+        input: { ...create.input, requestId: "different-request-id" },
       });
       assert.equal(alternateId.updated, false);
       assert.equal(alternateId.revision, 1);
       const plan = yield* store.getPlan(root);
       assert.equal(plan?.tasks.length, 3);
       const events = yield* store.mutatePlan({
-        kind: "update", rootThreadId: root, actorThreadId: root,
+        kind: "update",
+        rootThreadId: root,
+        actorThreadId: root,
         input: { requestId: "done", taskId: "D", planState: "cancelled", reason: "Not needed" },
       });
       assert.equal(events.revision, 2);
-    }).pipe(Effect.provide(Store.layerMemory)),
-  );
+    }).pipe(Effect.provide(Store.layerMemory)));
 
   it("records simultaneous discoveries without overwriting either task", () =>
     Effect.gen(function* () {
       const store = yield* Store.PlotlineStore;
       yield* store.mutatePlan(create);
-      yield* Effect.all([
-        store.mutatePlan({
-          kind: "add", rootThreadId: root, actorThreadId: root,
-          input: { requestId: "add-E", task: { id: "E", title: "Visual audit", dependsOn: ["B"] } },
-        }),
-        store.mutatePlan({
-          kind: "add", rootThreadId: root, actorThreadId: root,
-          input: { requestId: "add-F", task: { id: "F", title: "Final review", dependsOn: ["D"] } },
-        }),
-      ], { concurrency: 2 });
+      yield* Effect.all(
+        [
+          store.mutatePlan({
+            kind: "add",
+            rootThreadId: root,
+            actorThreadId: root,
+            input: {
+              requestId: "add-E",
+              task: { id: "E", title: "Visual audit", dependsOn: ["B"] },
+            },
+          }),
+          store.mutatePlan({
+            kind: "add",
+            rootThreadId: root,
+            actorThreadId: root,
+            input: {
+              requestId: "add-F",
+              task: { id: "F", title: "Final review", dependsOn: ["D"] },
+            },
+          }),
+        ],
+        { concurrency: 2 },
+      );
       const plan = yield* store.getPlan(root);
       assert.deepStrictEqual(plan?.tasks.map((task) => task.id).sort(), ["A", "B", "D", "E", "F"]);
       assert.equal(plan?.revision, 3);
-    }).pipe(Effect.provide(Store.layerMemory)),
-  );
+    }).pipe(Effect.provide(Store.layerMemory)));
 });
